@@ -1,0 +1,12 @@
+[project]
+name = "SeeQt"
+version = "0.1.0"
+description = "Performant data viewers implemented in PySide6"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.3.3",
+    "opencv-python>=4.11.0.86",
+    "pyqtgraph>=0.13.7",
+    "pyside6>=6.9.2",
+]
