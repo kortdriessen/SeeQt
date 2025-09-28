@@ -672,14 +672,24 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             self.plot_area.addItem(plt, row=idx, col=0)
 
             plt.setLabel("left", s.name)
-            plt.setLabel(
-                "bottom", "Time", units="s" if idx == len(self.series) - 1 else None
-            )
+            if idx != len(self.series) - 1:
+                plt.hideAxis("bottom")
+            else:
+                plt.showAxis("bottom")
+                plt.setLabel("bottom", "Time", units="s")
             plt.showGrid(x=True, y=True, alpha=0.15)
             plt.addLegend(offset=(10, 10))
             plt.enableAutoRange("x", False)
 
-            pen = pg.mkPen((150, 220, 255), width=1)
+            # Choose pastel color based on series name
+            name_l = (s.name or "").lower()
+            if "C" in name_l:
+                pen_color = (255, 170, 170)  # pastel red
+            elif "S" in name_l:
+                pen_color = (170, 255, 170)  # pastel green
+            else:
+                pen_color = (150, 220, 255)
+            pen = pg.mkPen(pen_color, width=1)
             curve = pg.PlotDataItem([], [], pen=pen, antialias=False)
             curve.setDownsampling(auto=True, method="peak")
             curve.setClipToView(True)
