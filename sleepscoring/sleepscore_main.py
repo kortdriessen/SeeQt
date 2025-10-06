@@ -141,6 +141,7 @@ class SelectableViewBox(pg.ViewBox):
     sigDragUpdate = QtCore.Signal(float)
     sigDragFinish = QtCore.Signal(float)
     sigWheelScrolled = QtCore.Signal(int)
+    sigWheelSmoothScrolled = QtCore.Signal(int)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -184,7 +185,15 @@ class SelectableViewBox(pg.ViewBox):
             except Exception:
                 dy = 0
         direction = 1 if dy > 0 else -1
-        self.sigWheelScrolled.emit(direction)
+        # Use Shift+wheel for smooth scrolling; otherwise page
+        try:
+            mods = QtWidgets.QApplication.keyboardModifiers()
+        except Exception:
+            mods = QtCore.Qt.KeyboardModifier.NoModifier
+        if mods & QtCore.Qt.KeyboardModifier.ShiftModifier:
+            self.sigWheelSmoothScrolled.emit(direction)
+        else:
+            self.sigWheelScrolled.emit(direction)
         ev.accept()
 
 
@@ -347,11 +356,15 @@ class SleepScorerApp(QtWidgets.QMainWindow):
     def __init__(
         self,
         data_dir=None,
+        data_files=None,
+        colors=None,
         video_path=None,
         frame_times_path=None,
         video2_path=None,
         frame_times2_path=None,
         image_path=None,
+        fixed_scale=False,
+        low_profile_x=False,
     ):
         super().__init__()
         self.setWindowTitle("Sleep Scorer — Multi-Trace + Video + Labeling")
@@ -380,16 +393,31 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         self.window_start = 0.0
         self.cursor_time = 0.0
 
-        self.keymap = {"w": "Wake", "n": "NREM", "r": "REM", "a": "Artifact"}
+        self.keymap = {
+            "w": "Wake",
+            "q": "Quiet-Wake",
+            "b": "Brief-Arousal",
+            "2": "NREM-light",
+            "1": "NREM",
+            "r": "REM",
+            "a": "Artifact",
+        }
         self.label_colors = {
-            "Wake": (200, 200, 0, 80),
-            "NREM": (0, 200, 255, 80),
-            "REM": (255, 0, 200, 80),
-            "Artifact": (255, 120, 0, 80),
+            "Wake": (0, 209, 40, 60),
+            "Quiet-Wake": (79, 255, 168, 60),
+            "Brief-Arousal": (188, 255, 45, 60),
+            "NREM-light": (79, 247, 255, 60),
+            "NREM": (41, 30, 255, 60),
+            "Transition-to-REM": (255, 101, 224, 60),
+            "REM": (255, 30, 145, 60),
+            "Artifact": (255, 0, 0, 80),
         }
         self.labels = []
         self._select_start = None
         self._select_end = None
+        self._is_zoom_drag = False
+        self.fixed_scale = bool(fixed_scale)
+        self.low_profile_x = bool(low_profile_x)
 
         # Video
         self.video_frame_times = None
@@ -413,6 +441,9 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         self.playback_timer.timeout.connect(self._advance_playback_frame)
         self.playback_elapsed_timer = QtCore.QElapsedTimer()
 
+        # Smooth scroll settings (fraction of window per wheel step)
+        self.smooth_scroll_fraction = 0.10
+
         # Static Image (hidden if second video is loaded)
         self.static_image_pixmap = None
 
@@ -435,8 +466,51 @@ class SleepScorerApp(QtWidgets.QMainWindow):
 
         self._video_thread.start()
         self._video2_thread.start()
+        # Prefer explicit file list if provided; otherwise fall back to dir
+        if data_files:
+            # Allow flexible formats: list[str], comma-separated strings, or "[a,b]".
+            def _normalize_file_list(df):
+                if not df:
+                    return []
+                items = [df] if isinstance(df, str) else list(df)
+                out = []
+                for it in items:
+                    s = (it or "").strip()
+                    # Strip surrounding list brackets if present
+                    if s.startswith("[") and s.endswith("]"):
+                        s = s[1:-1]
+                    parts = s.split(",") if "," in s else [s]
+                    for p in parts:
+                        q = p.strip().strip('"').strip("'")
+                        # Remove a lingering trailing comma if passed as a token like "file.npy,"
+                        if q.endswith(","):
+                            q = q[:-1].rstrip()
+                        if q:
+                            out.append(q)
+                return out
 
-        if data_dir:
+            def _normalize_list(raw_list):
+                if not raw_list:
+                    return []
+                items = [raw_list] if isinstance(raw_list, str) else list(raw_list)
+                out = []
+                for it in items:
+                    s = (it or "").strip()
+                    if s.startswith("[") and s.endswith("]"):
+                        s = s[1:-1]
+                    parts = s.split(",") if "," in s else [s]
+                    for p in parts:
+                        q = p.strip().strip('"').strip("'")
+                        if q.endswith(","):
+                            q = q[:-1].rstrip()
+                        if q:
+                            out.append(q)
+                return out
+
+            paths = _normalize_file_list(data_files)
+            color_list = _normalize_list(colors) if colors else None
+            self._load_series_from_files(paths, colors=color_list)
+        elif data_dir:
             self._load_series_from_dir(data_dir)
         if video_path and frame_times_path:
             self._load_video_data(video_path, frame_times_path)
@@ -603,10 +677,30 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         y_axis_action.triggered.connect(self._show_y_axis_dialog)
         mview.addAction(y_axis_action)
 
+        scroll_speed_action = QtGui.QAction("Adjust Smooth Scroll Speed...", self)
+        scroll_speed_action.triggered.connect(self._adjust_scroll_speed)
+        mview.addAction(scroll_speed_action)
+
         mhelp = self.menuBar().addMenu("&Help")
         hh = QtGui.QAction("Shortcuts / Help", self)
         hh.triggered.connect(self._show_help)
         mhelp.addAction(hh)
+
+    def _adjust_scroll_speed(self):
+        try:
+            val, ok = QtWidgets.QInputDialog.getDouble(
+                self,
+                "Adjust Smooth Scroll Speed",
+                "Fraction of window per wheel step (0.001 - 1.0):",
+                float(self.smooth_scroll_fraction),
+                0.001,
+                1.0,
+                3,
+            )
+        except Exception:
+            val, ok = (self.smooth_scroll_fraction, False)
+        if ok:
+            self.smooth_scroll_fraction = float(max(0.001, min(1.0, val)))
 
     # ---------- Data ----------
     def _load_series_from_dir(self, folder):
@@ -636,6 +730,137 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         if series:
             self.set_series(series)
 
+    def _load_series_from_files(self, files, colors=None):
+        """Load series from an explicit ordered list of *_t.npy / *_y.npy files.
+
+        The display order (top to bottom) follows the order in which distinct
+        base names first appear in the provided list. A "base name" is the
+        filename without the trailing "_t.npy" or "_y.npy".
+        """
+        self._stop_playback_if_playing()
+
+        if not files:
+            QtWidgets.QMessageBox.warning(self, "No data", "No files provided.")
+            return
+
+        # Build mapping base_name -> { 't': path or None, 'y': path or None }
+        series_map = {}
+        order = []  # first-seen order of base names
+        first_index = {}  # base name -> first index in files list
+
+        def base_for(path: str):
+            fn = os.path.basename(path)
+            if fn.endswith("_t.npy"):
+                return fn[:-6], "t"
+            if fn.endswith("_y.npy"):
+                return fn[:-6], "y"
+            return None, None
+
+        for idx, p in enumerate(files):
+            if not p:
+                continue
+            b, kind = base_for(p)
+            if b is None:
+                QtWidgets.QMessageBox.warning(
+                    self, "Skip", f"Not a *_t.npy or *_y.npy file: {p}"
+                )
+                continue
+            if b not in series_map:
+                series_map[b] = {"t": None, "y": None}
+                order.append(b)
+                first_index[b] = idx
+            series_map[b][kind] = p
+
+        # Assemble in the order seen; require both t and y
+        series = []
+        series_colors = []
+        for b in order:
+            paths = series_map.get(b, {})
+            tpath, ypath = paths.get("t"), paths.get("y")
+            if not tpath or not ypath:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Missing pair",
+                    f"Skipping '{b}': need both {b}_t.npy and {b}_y.npy",
+                )
+                continue
+            if not (os.path.exists(tpath) and os.path.exists(ypath)):
+                QtWidgets.QMessageBox.warning(
+                    self, "File not found", f"Missing files for '{b}'."
+                )
+                continue
+            try:
+                t = np.load(tpath).astype(float)
+                y = np.load(ypath).astype(float)
+                if t.ndim != 1 or y.ndim != 1 or len(t) != len(y):
+                    raise ValueError("t and y must be 1-D & equal length")
+                series.append(Series(b, t, y))
+                series_colors.append(None)  # placeholder
+            except Exception as e:
+                QtWidgets.QMessageBox.warning(self, "Load error", f"{b}: {e}")
+
+        if not series:
+            QtWidgets.QMessageBox.warning(
+                self, "No data", "No valid *_t.npy / *_y.npy pairs in list."
+            )
+            return
+
+        # Map provided colors to series order
+        def _parse_color(cs: str):
+            s = (cs or "").strip()
+            try:
+                if s.startswith("#"):
+                    s = s[1:]
+                    if len(s) in (6, 8):
+                        r = int(s[0:2], 16)
+                        g = int(s[2:4], 16)
+                        b = int(s[4:6], 16)
+                        a = int(s[6:8], 16) if len(s) == 8 else 255
+                        return (r, g, b, a)
+                if s.lower().startswith("0x"):
+                    v = int(s, 16)
+                    r = (v >> 16) & 0xFF
+                    g = (v >> 8) & 0xFF
+                    b = v & 0xFF
+                    return (r, g, b, 255)
+                if "," in s:
+                    parts = [int(x.strip()) for x in s.split(",") if x.strip()]
+                    if len(parts) == 3:
+                        return (parts[0], parts[1], parts[2], 255)
+                    if len(parts) >= 4:
+                        return (parts[0], parts[1], parts[2], parts[3])
+            except Exception:
+                pass
+            return None
+
+        mapped_colors = None
+        if colors:
+            # If colors count matches series count, map 1:1
+            if len(colors) == len(series):
+                mapped_colors = [
+                    (_parse_color(c) or (255, 255, 255, 255)) for c in colors
+                ]
+            # If colors matches files count, use first occurrence index mapping
+            elif len(colors) == len(files):
+                mapped_colors = []
+                for b in order:
+                    ci = first_index.get(b, 0)
+                    col = _parse_color(colors[ci]) or (255, 255, 255, 255)
+                    mapped_colors.append(col)
+            else:
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Colors",
+                    (
+                        f"Ignoring --colors: count {len(colors)} doesn't match series ({len(series)}) "
+                        f"or file count ({len(files)})."
+                    ),
+                )
+
+        # Store colors aligned with series; default to white if not provided
+        self.series_colors = mapped_colors or [(255, 255, 255, 255)] * len(series)
+        self.set_series(series)
+
     def _on_load_time_series(self):
         folder = QtWidgets.QFileDialog.getExistingDirectory(
             self, "Select folder with *_t.npy and *_y.npy"
@@ -663,6 +888,8 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         for idx, s in enumerate(self.series):
             vb = SelectableViewBox()
             vb.sigWheelScrolled.connect(self._page)
+            vb.sigWheelSmoothScrolled.connect(self._on_smooth_scroll)
+            vb.sigWheelSmoothScrolled.connect(self._on_smooth_scroll)
 
             # *** FIX 2: Use HoverablePlotItem to track mouse location ***
             plt = HoverablePlotItem(viewBox=vb)
@@ -675,18 +902,39 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             plt.setLabel(
                 "bottom", "Time", units="s" if idx == len(self.series) - 1 else None
             )
+            # Always enable both grids; for low_profile_x we hide axis visuals but keep grid
             plt.showGrid(x=True, y=True, alpha=0.15)
             plt.addLegend(offset=(10, 10))
             plt.enableAutoRange("x", False)
 
-            # Choose pastel color based on series name
-            name_l = (s.name or "").lower()
-            if "C" in name_l:
-                pen_color = (255, 170, 170)  # pastel red
-            elif "S" in name_l:
-                pen_color = (170, 255, 170)  # pastel green
+            if self.low_profile_x and idx != len(self.series) - 1:
+                try:
+                    # Keep the axis and spine visible, remove text/ticks, keep grid
+                    plt.setLabel("bottom", "")
+                    bax = plt.getAxis("bottom")
+                    bax.setStyle(showValues=True, tickLength=0)
+                    bax.setTextPen(pg.mkPen(0, 0, 0, 0))  # hide tick text
+                    bax.setHeight(12)
+                    try:
+                        bax.setGrid(True, alpha=0.15)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+            # Make tick labels slightly smaller for consistency and tighter margin
+            try:
+                lf = QtGui.QFont()
+                lf.setPointSize(9)
+                plt.getAxis("left").setStyle(tickFont=lf)
+            except Exception:
+                pass
+
+            # Choose color: use provided series_colors or default to white
+            if getattr(self, "series_colors", None) and idx < len(self.series_colors):
+                pen_color = self.series_colors[idx]
             else:
-                pen_color = (150, 220, 255)
+                pen_color = (255, 255, 255)
             pen = pg.mkPen(pen_color, width=1)
             curve = pg.PlotDataItem([], [], pen=pen, antialias=False)
             curve.setDownsampling(auto=True, method="peak")
@@ -721,12 +969,33 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             vb.sigDragUpdate.connect(self._on_drag_update)
             vb.sigDragFinish.connect(self._on_drag_finish)
 
-            plt.enableAutoRange("y", True)
+            # Y-axis behavior: either auto or fixed scale from data
+            if self.fixed_scale:
+                try:
+                    y = np.asarray(s.y, dtype=float)
+                    # robust limits to avoid outliers
+                    lo = float(np.nanpercentile(y, 1.0))
+                    hi = float(np.nanpercentile(y, 99.0))
+                    if not np.isfinite(lo) or not np.isfinite(hi):
+                        raise ValueError("non-finite percentiles")
+                    if hi <= lo:
+                        hi = lo + 1.0
+                    # small pad
+                    pad = 0.05 * (hi - lo)
+                    plt.enableAutoRange("y", False)
+                    plt.setYRange(lo - pad, hi + pad, padding=0)
+                except Exception:
+                    plt.enableAutoRange("y", False)
+            else:
+                plt.enableAutoRange("y", True)
 
         self._apply_x_range()
         self._update_nav_slider_from_window()
         self._update_status(f"Loaded {len(self.series)} series.")
         self._update_hypnogram_extents()
+        # Align left axes after layout settles
+        QtCore.QTimer.singleShot(0, self._align_left_axes)
+        QtCore.QTimer.singleShot(100, self._align_left_axes)
 
     # ---------- Video & Static Image ----------
     def _load_video_data(self, vpath, ft_path):
@@ -920,6 +1189,12 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         self._stop_playback_if_playing()
         self._select_start = x
         self._select_end = x
+        # Determine if this drag is a zoom gesture (Shift held)
+        try:
+            mods = QtWidgets.QApplication.keyboardModifiers()
+        except Exception:
+            mods = QtCore.Qt.KeyboardModifier.NoModifier
+        self._is_zoom_drag = bool(mods & QtCore.Qt.KeyboardModifier.ShiftModifier)
         self._show_active_selection()
 
     def _on_drag_update(self, x):
@@ -928,6 +1203,27 @@ class SleepScorerApp(QtWidgets.QMainWindow):
 
     def _on_drag_finish(self, x):
         self._select_end = x
+        # If this was a Shift+drag, zoom to the selected time range
+        if self._is_zoom_drag:
+            a = float(min(self._select_start, self._select_end))
+            b = float(max(self._select_start, self._select_end))
+            if b > a:
+                new_len = max(0.1, b - a)
+                self.window_len = new_len
+                self.window_start = clamp(
+                    a,
+                    self.t_global_min,
+                    max(self.t_global_min, self.t_global_max - self.window_len),
+                )
+                # Sync UI without triggering change handler
+                self.window_spin.blockSignals(True)
+                self.window_spin.setValue(self.window_len)
+                self.window_spin.blockSignals(False)
+                self._apply_x_range()
+                self._update_nav_slider_from_window()
+            self._is_zoom_drag = False
+            self._clear_selection()
+            return
         self._show_active_selection(final=True)
 
     def _on_active_region_dragged(self):
@@ -986,7 +1282,38 @@ class SleepScorerApp(QtWidgets.QMainWindow):
 
         updated_labels.append({"start": start, "end": end, "label": label})
         self.labels = sorted(updated_labels, key=lambda x: x["start"])
+        self._merge_adjacent_same_labels()
         self._redraw_all_labels()
+
+    def _merge_adjacent_same_labels(self, adjacency_eps: float = 1e-9):
+        if not self.labels:
+            return
+        merged = []
+        for lab in sorted(self.labels, key=lambda x: x["start"]):
+            if not merged:
+                merged.append(
+                    {
+                        "start": float(lab["start"]),
+                        "end": float(lab["end"]),
+                        "label": lab["label"],
+                    }
+                )
+                continue
+            prev = merged[-1]
+            if (
+                lab["label"] == prev["label"]
+                and float(lab["start"]) <= float(prev["end"]) + adjacency_eps
+            ):
+                prev["end"] = max(float(prev["end"]), float(lab["end"]))
+            else:
+                merged.append(
+                    {
+                        "start": float(lab["start"]),
+                        "end": float(lab["end"]),
+                        "label": lab["label"],
+                    }
+                )
+        self.labels = merged
 
     def _redraw_all_labels(self):
         """Clears and redraws all visual label regions."""
@@ -1179,6 +1506,7 @@ class SleepScorerApp(QtWidgets.QMainWindow):
                     )
 
             self.labels = sorted(loaded_labels, key=lambda x: x["start"])
+            self._merge_adjacent_same_labels()
             self._redraw_all_labels()
             self._update_status(
                 f"Loaded {len(self.labels)} labels from {os.path.basename(path)}"
@@ -1275,6 +1603,29 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         self.window_start = new_start
         self.cursor_time = self.window_start + rel * self.window_len
 
+        self._apply_x_range()
+        self._update_nav_slider_from_window()
+
+    def _on_smooth_scroll(self, direction: int):
+        self._stop_playback_if_playing()
+        direction = 1 if direction >= 1 else -1
+        total = self.t_global_max - self.t_global_min
+        if total <= 0:
+            return
+        delta = direction * float(self.smooth_scroll_fraction) * float(self.window_len)
+        new_start = self.window_start + delta
+        new_start = clamp(
+            new_start,
+            self.t_global_min,
+            max(self.t_global_min, self.t_global_max - self.window_len),
+        )
+        rel = (
+            0.0
+            if self.window_len <= 0
+            else (self.cursor_time - self.window_start) / self.window_len
+        )
+        self.window_start = new_start
+        self.cursor_time = self.window_start + rel * self.window_len
         self._apply_x_range()
         self._update_nav_slider_from_window()
 
@@ -1405,6 +1756,24 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         self._rescale_video_frame()
         self._rescale_static_image()
         QtCore.QTimer.singleShot(50, self._refresh_curves)
+        QtCore.QTimer.singleShot(60, self._align_left_axes)
+
+    def _align_left_axes(self):
+        try:
+            if not self.plots:
+                return
+            widths = []
+            for plt in self.plots:
+                ax = plt.getAxis("left")
+                widths.append(int(ax.width()))
+            if not widths:
+                return
+            target = max(max(widths), 55)
+            for plt in self.plots:
+                ax = plt.getAxis("left")
+                ax.setWidth(int(target))
+        except Exception:
+            pass
 
     # ---------- Help/Status & cleanup ----------
 
@@ -1488,6 +1857,23 @@ def main():
         type=str,
         help="Path to directory with time series files (*_t.npy, *_y.npy)",
     )
+    parser.add_argument(
+        "--data_files",
+        nargs="+",
+        type=str,
+        help=(
+            "Ordered list of .npy files (mix of *_t.npy and *_y.npy). "
+            "Pairs are matched by basename; display order follows first appearance."
+        ),
+    )
+    parser.add_argument(
+        "--colors",
+        nargs="+",
+        type=str,
+        help=(
+            "Optional colors matching series order. Accepts hex (#RRGGBB[AA]), 0xRRGGBB, or R,G,B[,A]."
+        ),
+    )
     parser.add_argument("--video", type=str, help="Path to video file (.mp4)")
     parser.add_argument(
         "--frame_times", type=str, help="Path to video frame times file (.npy)"
@@ -1499,16 +1885,32 @@ def main():
     parser.add_argument(
         "--image", type=str, help="Path to static image file (.png, .jpg, etc.)"
     )
+    parser.add_argument(
+        "--fixed_scale",
+        action="store_true",
+        help=(
+            "Disable Y auto-scaling and apply fixed initial Y ranges from robust percentiles."
+        ),
+    )
+    parser.add_argument(
+        "--low_profile_x",
+        action="store_true",
+        help=("Hide X-axis labels and ticks for all but the bottom plot."),
+    )
     args = parser.parse_args()
 
     app = QtWidgets.QApplication(sys.argv)
     w = SleepScorerApp(
         data_dir=args.data_dir,
+        data_files=args.data_files,
+        colors=args.colors,
         video_path=args.video,
         frame_times_path=args.frame_times,
         video2_path=args.video2,
         frame_times2_path=args.frame_times2,
         image_path=args.image,
+        fixed_scale=args.fixed_scale,
+        low_profile_x=args.low_profile_x,
     )
     w.show()
     sys.exit(app.exec())
