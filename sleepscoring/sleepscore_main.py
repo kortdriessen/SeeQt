@@ -401,6 +401,7 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             "1": "NREM",
             "r": "REM",
             "a": "Artifact",
+            "t": "Transition-to-REM",
         }
         self.label_colors = {
             "Wake": (0, 209, 40, 60),
