@@ -51,7 +51,7 @@ rois = st.checkbox("Include Soma ROIs", value=False)
 if rois:
     all_rois = st.checkbox("include ROIs for all acquisitions?", value=False)
 synapses = st.checkbox("Include Synaptic Traces", value=False)
-
+eye = st.checkbox("Include Eye Traces", value=False)
 
 traces = []
 trace_colors = []
@@ -151,6 +151,16 @@ if synapses:
             time_file = syn_file.replace("_y.npy", "_t.npy")
             traces.append(os.path.join(syn_data_dir, time_file))
             trace_colors.append(glu_green)
+
+if eye:
+    eye_data_dir = f"Z:\\slap_mi\\analysis_materials\\{subject}\\{exp}\\scoring_data\\sync_block-{sb}\\eye"
+    for f in os.listdir(eye_data_dir):
+        if not f.endswith("_y.npy"):
+            continue
+        traces.append(os.path.join(eye_data_dir, f))
+        time_file = f.replace("_y.npy", "_t.npy")
+        traces.append(os.path.join(eye_data_dir, time_file))
+        trace_colors.append(eye_indigo)
 
 low_profile_x = st.checkbox("Low Profile X", value=False)
 if st.button("Launch GUI"):
