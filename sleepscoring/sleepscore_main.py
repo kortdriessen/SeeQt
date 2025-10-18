@@ -402,6 +402,7 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             "r": "REM",
             "a": "Artifact",
             "t": "Transition-to-REM",
+            "u": "unclear",
         }
         self.label_colors = {
             "Wake": (0, 209, 40, 60),
@@ -412,6 +413,7 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             "Transition-to-REM": (255, 101, 224, 60),
             "REM": (255, 30, 145, 60),
             "Artifact": (255, 0, 0, 80),
+            "unclear": (242, 255, 41, 50),
         }
         self.labels = []
         self._select_start = None
@@ -1286,6 +1288,38 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         self._merge_adjacent_same_labels()
         self._redraw_all_labels()
 
+    def _clear_labels_in_range(self, start: float, end: float):
+        """Remove any labels overlapping [start, end). Preserve non-overlapping parts.
+
+        If an existing labeled epoch partially overlaps the range, it is split
+        and only the overlapping part is removed.
+        """
+        if end <= start or not self.labels:
+            return
+        kept: list[dict] = []
+        a = float(start)
+        b = float(end)
+        for existing in self.labels:
+            ex_start = float(existing["start"])
+            ex_end = float(existing["end"])
+            lab = existing["label"]
+
+            # No overlap
+            if ex_end <= a or ex_start >= b:
+                kept.append(existing)
+                continue
+
+            # Overlap exists; keep non-overlapping tails
+            if ex_start < a:
+                kept.append({"start": ex_start, "end": a, "label": lab})
+            if ex_end > b:
+                kept.append({"start": b, "end": ex_end, "label": lab})
+
+        # Keep labels ordered; merging not required but harmless if adjacent remains
+        self.labels = sorted(kept, key=lambda x: x["start"])
+        self._merge_adjacent_same_labels()
+        self._redraw_all_labels()
+
     def _merge_adjacent_same_labels(self, adjacency_eps: float = 1e-9):
         if not self.labels:
             return
@@ -1444,6 +1478,21 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             if b > a:
                 self._add_new_label(a, b, label)
                 self._update_status(f"Labeled {label}: [{a:.3f}, {b:.3f}]")
+                self._clear_selection()
+                return
+
+        # Clear labels in selected region with '0'
+        if (
+            key == QtCore.Qt.Key.Key_0
+            and self._select_start is not None
+            and self._select_end is not None
+        ):
+            self._stop_playback_if_playing()
+            a = float(min(self._select_start, self._select_end))
+            b = float(max(self._select_start, self._select_end))
+            if b > a:
+                self._clear_labels_in_range(a, b)
+                self._update_status(f"Cleared labels in [{a:.3f}, {b:.3f}]")
                 self._clear_selection()
                 return
 

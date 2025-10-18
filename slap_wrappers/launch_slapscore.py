@@ -7,6 +7,7 @@ from trace_colors import *
 import streamlit as st
 from slap_win_utils import *
 from PIL import Image
+import pandas as pd
 
 app_path = "C:\\Users\\driessen2\\python_projects\\DATA_VIEWERS\\SeeQt\\sleepscoring\\sleepscore_main.py"
 
@@ -161,6 +162,63 @@ if eye:
         time_file = f.replace("_y.npy", "_t.npy")
         traces.append(os.path.join(eye_data_dir, time_file))
         trace_colors.append(eye_indigo)
+
+    whisk_dir = f"Z:\\slap_mi\\analysis_materials\\{subject}\\{exp}\\scoring_data\\sync_block-{sb}\\whisking"
+    for f in os.listdir(whisk_dir):
+        if not f.endswith("_y.npy"):
+            continue
+        traces.append(os.path.join(whisk_dir, f))
+        time_file = f.replace("_y.npy", "_t.npy")
+        traces.append(os.path.join(whisk_dir, time_file))
+        trace_colors.append(whisk_pink)
+
+write_temp_hypno = st.sidebar.checkbox("Write temp hypnogram to file", value=False)
+if write_temp_hypno:
+    temp_hypno_path = f"Z:\\slap_mi\\analysis_materials\\{subject}\\{exp}\\scoring_data\\sync_block-{sb}\\hypnograms\\model_labelled\\raw_epochs.csv"
+    if not os.path.exists(temp_hypno_path):
+        st.write(f"Temp hypnogram file not found: {temp_hypno_path}")
+        write_temp_hypno = False
+
+    write_path = "temp_hypnogram.csv"
+
+    keep_state_threshold = st.sidebar.number_input(
+        "Keep state threshold (must be above this to maintain model prediction)",
+        value=0.5,
+        min_value=0.01,
+        max_value=0.99,
+    )
+    keep_state_threshold = float(keep_state_threshold)
+
+    if st.sidebar.button("Apply threshold and write hypnogram"):
+        if os.path.exists(write_path):
+            st.write(f"Removing existing temp hypnogram: {write_path}")
+            os.remove(write_path)
+
+        epoch_df = pd.read_csv(temp_hypno_path)
+        epoch_df["label"] = epoch_df["label"].mask(
+            epoch_df[["NREM_smooth", "REM_smooth", "Wake_smooth"]].max(axis=1)
+            < keep_state_threshold,
+            "unclear",
+        )
+        # merge adjacent epochs with the same label
+        epoch_df_sorted = epoch_df.sort_values("start_s").reset_index(drop=True)
+        # Create a group identifier for consecutive labels
+        epoch_df_sorted["group"] = (
+            epoch_df_sorted["label"] != epoch_df_sorted["label"].shift()
+        ).cumsum()
+        # Group by the label and group identifier, then aggregate
+        merged_epoch_df = (
+            epoch_df_sorted.groupby(["label", "group"])
+            .agg({"start_s": "first", "end_s": "last"})
+            .reset_index()
+        )
+        # Drop the temporary group column
+        merged_epoch_df = merged_epoch_df.drop("group", axis=1)
+        # Sort by start_s for final output
+        merged_epoch_df = merged_epoch_df.sort_values("start_s").reset_index(drop=True)
+        final_hypno = merged_epoch_df[["start_s", "end_s", "label"]]
+        final_hypno.to_csv(write_path, index=False)
+        st.write(f"Temp hypnogram written to {write_path}")
 
 low_profile_x = st.checkbox("Low Profile X", value=False)
 if st.button("Launch GUI"):
