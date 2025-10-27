@@ -5,8 +5,8 @@ build/
 dist/
 wheels/
 *.egg-info
-*.csv
-*.mp4
+#*.csv
+#*.mp4
 *.npy
 
 # Virtual environments

@@ -1,0 +1,7 @@
+soma_red1 = "#ff5555"
+soma_red2 = "#fc5325"
+trace_white = "#ecebeb"
+load_blue = "#5c95ff"
+glu_green = "#5cff90"
+eye_indigo = "#8c66ff"
+whisk_pink = "#fa5eff"
