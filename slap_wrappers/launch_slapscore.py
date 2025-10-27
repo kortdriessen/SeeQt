@@ -53,6 +53,7 @@ if rois:
     all_rois = st.checkbox("include ROIs for all acquisitions?", value=False)
 synapses = st.checkbox("Include Synaptic Traces", value=False)
 eye = st.checkbox("Include Eye Traces", value=False)
+glut_sums = st.checkbox("Include Glutamate Sums", value=False)
 
 traces = []
 trace_colors = []
@@ -86,6 +87,17 @@ for f in os.listdir(main_data_dir):
             time_file = f.replace("_y.npy", "_t.npy")
             traces.append(os.path.join(main_data_dir, time_file))
             trace_colors.append(load_blue)
+
+if glut_sums:
+    glut_sums_dir = f"Z:\\slap_mi\\analysis_materials\\{subject}\\{exp}\\scoring_data\\sync_block-{sb}\\glutamate_sums"
+    for f in os.listdir(glut_sums_dir):
+        if not f.endswith("_y.npy"):
+            continue
+        if f.endswith("_y.npy"):
+            traces.append(os.path.join(glut_sums_dir, f))
+            time_file = f.replace("_y.npy", "_t.npy")
+            traces.append(os.path.join(glut_sums_dir, time_file))
+            trace_colors.append(glut_sum_green)
 
 if rois:
     if all_rois:
@@ -221,6 +233,8 @@ if write_temp_hypno:
         st.write(f"Temp hypnogram written to {write_path}")
 
 low_profile_x = st.checkbox("Low Profile X", value=False)
+
+
 if st.button("Launch GUI"):
     # Build argument list and invoke without shell quoting issues
     if low_profile_x:

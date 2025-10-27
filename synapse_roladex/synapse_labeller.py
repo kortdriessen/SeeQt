@@ -59,6 +59,7 @@ try:
         QGraphicsPixmapItem,
         QStackedWidget,
         QInputDialog,
+        QSlider,
     )
 except Exception as exc:  # pragma: no cover - helpful message if PySide6 missing
     print(
@@ -401,12 +402,17 @@ class HotkeyManager(QObject):
             "s": {"column": "synapse-type", "value": "shaft"},
             "c": {"column": "synapse-type", "value": "soma"},
             "x": {"column": "synapse-type", "value": "axon"},
+            "u": {"column": "synapse-type", "value": "unclear"},
             "1": {"column": "soma-ID", "value": "soma1"},
             "2": {"column": "soma-ID", "value": "soma2"},
             "3": {"column": "soma-ID", "value": "soma3"},
             "4": {"column": "soma-ID", "value": "soma4"},
+            "8": {"column": "soma-ID", "value": "somaUK1"},
+            "9": {"column": "soma-ID", "value": "somaUK2"},
+            "q": {"column": "soma-ID", "value": "unidentifiable_soma"},
             "a": {"column": "dend-type", "value": "apical"},
             "b": {"column": "dend-type", "value": "basal"},
+            "i": {"column": "dend-type", "value": "intermediate"},
         }
         # Normalize keys lower
         self.global_mapping = {
@@ -660,6 +666,15 @@ def load_or_create_headers(directory: str) -> List[str]:
     return list(DEFAULT_HEADERS)
 
 
+def save_headers(directory: str, headers: List[str]) -> None:
+    path = os.path.join(directory, "table_headers.json")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(headers, f, indent=2)
+    except Exception:
+        pass
+
+
 # -------------------------------
 # Main window
 # -------------------------------
@@ -765,6 +780,12 @@ class MainWindow(QMainWindow):
         self.reload_hotkeys_act.triggered.connect(self._reload_hotkeys)
         self.toolbar.addAction(self.reload_hotkeys_act)
 
+        # Add Column action
+        self.add_column_act = QAction("Add Column", self)
+        self.add_column_act.setShortcut(QKeySequence("Ctrl+Shift+C"))
+        self.add_column_act.triggered.connect(self._add_column)
+        self.toolbar.addAction(self.add_column_act)
+
         # Batch actions
         self.toolbar.addSeparator()
         self.batch_toggle_act = QAction("Batch Mode", self)
@@ -812,6 +833,25 @@ class MainWindow(QMainWindow):
         self.toolbar.addSeparator()
         self.sel_lbl = QLabel("Sel: 0")
         self.toolbar.addWidget(self.sel_lbl)
+
+        # Batch brightness (window) controls
+        self.toolbar.addSeparator()
+        self.toolbar.addWidget(QLabel("Min:"))
+        self.vmin_slider = QSlider(Qt.Horizontal)
+        self.vmin_slider.setRange(0, 255)
+        self.vmin_slider.setFixedWidth(120)
+        self.vmin_slider.setValue(0)
+        self.vmin_slider.valueChanged.connect(self._update_window_from_sliders)
+        self.toolbar.addWidget(self.vmin_slider)
+        self.toolbar.addWidget(QLabel("Max:"))
+        self.vmax_slider = QSlider(Qt.Horizontal)
+        self.vmax_slider.setRange(0, 255)
+        self.vmax_slider.setFixedWidth(120)
+        self.vmax_slider.setValue(255)
+        self.vmax_slider.valueChanged.connect(self._update_window_from_sliders)
+        self.toolbar.addWidget(self.vmax_slider)
+        # Initially disabled until batch mode
+        self._set_window_controls_enabled(False)
 
     # ----- Core behaviors -----
     def open_directory(self) -> None:
@@ -904,6 +944,37 @@ class MainWindow(QMainWindow):
         dlg = HotkeyEditorDialog(self.hotkeys, self)
         dlg.exec()
 
+    def _add_column(self) -> None:
+        # Only when a directory is open
+        if not self.store.directory:
+            QMessageBox.information(self, "Info", "Open a directory first.")
+            return
+        name, ok = QInputDialog.getText(self, "Add Column", "New column name:")
+        if not ok:
+            return
+        new_col = name.strip()
+        if not new_col:
+            return
+        if new_col == "source-ID" or new_col in self.store.columns:
+            QMessageBox.information(
+                self, "Info", "Column already exists or is reserved."
+            )
+            return
+        # Update headers JSON
+        headers = list(self.store.columns)
+        headers.append(new_col)
+        save_headers(self.store.directory, headers)
+        # Update store columns and add None values to existing records
+        self.store.columns = headers
+        for rec in self.store.records:
+            rec.values.setdefault(new_col, None)
+        # Persist to CSV and refresh model
+        self.store.save()
+        self.table_model.handle_store_changed()
+        # Update active column combo
+        self.column_combo.addItem(new_col)
+        self.status.showMessage(f"Added column '{new_col}'", 2000)
+
     def _reload_hotkeys(self) -> None:
         # Re-initialize from directory to reapply YAML and JSON
         if not self.store.directory:
@@ -918,8 +989,10 @@ class MainWindow(QMainWindow):
         self.batch_mode = self.batch_toggle_act.isChecked()
         if self.batch_mode:
             self.stack.setCurrentWidget(self.batch_view)
+            self._set_window_controls_enabled(True)
         else:
             self.stack.setCurrentWidget(self.viewer)
+            self._set_window_controls_enabled(False)
             # When returning to single-image mode, refresh current image
             if self.current_row >= 0:
                 rec = self.store.get_row(self.current_row)
@@ -986,6 +1059,14 @@ class MainWindow(QMainWindow):
             self.batch_view.load_master(image_path, label_map, id_list)
             self.batch_toggle_act.setChecked(True)
             self._toggle_batch_mode()
+            # Reset sliders to default window
+            self.vmin_slider.blockSignals(True)
+            self.vmax_slider.blockSignals(True)
+            self.vmin_slider.setValue(0)
+            self.vmax_slider.setValue(255)
+            self.vmin_slider.blockSignals(False)
+            self.vmax_slider.blockSignals(False)
+            self.batch_view.set_window(0, 255)
             self.status.showMessage(
                 "Master image and key loaded. Draw polygon (double-click or Enter to finalize, Esc to cancel)."
             )
@@ -1118,6 +1199,59 @@ class MainWindow(QMainWindow):
                     self._update_status()
                     return True
 
+        # Enter value (Ctrl+Shift+V)
+        if key == Qt.Key_V and (mod & (Qt.ControlModifier | Qt.ShiftModifier)) == (
+            Qt.ControlModifier | Qt.ShiftModifier
+        ):
+            cols = [c for c in self.store.columns if c != "source-ID"]
+            if not cols:
+                QMessageBox.information(self, "Info", "No editable columns available.")
+                return True
+            col, ok = QInputDialog.getItem(
+                self,
+                "Enter value",
+                "Choose column:",
+                cols,
+                0,
+                False,
+            )
+            if not ok or not col:
+                return True
+            text, ok2 = QInputDialog.getText(
+                self, "Enter value", f"Enter value for '{col}':"
+            )
+            if not ok2:
+                return True
+            value = text
+            if getattr(self, "batch_mode", False):
+                selected_ids = self.batch_view.get_selected_ids()
+                if selected_ids:
+                    updated = self.store.set_value_for_ids(selected_ids, col, value)
+                    self.status.showMessage(f"Set {col} for {updated} selected IDs")
+                    return True
+                else:
+                    QMessageBox.information(
+                        self,
+                        "Info",
+                        "No batch selection. Select IDs or exit batch mode.",
+                    )
+                    return True
+            if self.current_row >= 0:
+                self.store.set_value(self.current_row, col, value)
+                idx = self.table_model.index(
+                    self.current_row, self.store.columns.index(col)
+                )
+                self.table_model.dataChanged.emit(
+                    idx, idx, [Qt.DisplayRole, Qt.EditRole]
+                )
+                self._update_status()
+                return True
+            else:
+                QMessageBox.information(
+                    self, "Info", "No row selected. Select a row or use batch mode."
+                )
+                return True
+
         # Assign via hotkeys when plain key is pressed
         text = event.text()
         if text and len(text) == 1 and mod in (Qt.NoModifier, Qt.ShiftModifier):
@@ -1219,6 +1353,17 @@ class MainWindow(QMainWindow):
             text = text + "\n" + "\n".join(g_lines)
         QMessageBox.information(self, "Shortcut Help", text)
 
+    def _set_window_controls_enabled(self, enabled: bool) -> None:
+        for w in [self.vmin_slider, self.vmax_slider]:
+            w.setEnabled(enabled)
+
+    def _update_window_from_sliders(self) -> None:
+        if not self.batch_mode:
+            return
+        vmin = self.vmin_slider.value()
+        vmax = self.vmax_slider.value()
+        self.batch_view.set_window(vmin, vmax)
+
 
 # -------------------------------
 # Batch selection graphics view
@@ -1251,6 +1396,11 @@ class BatchGraphicsView(QGraphicsView):
         # Keep a reference to overlay backing store
         self._overlay_np: Optional[np.ndarray] = None
 
+        # Brightness/contrast LUT parameters for grayscale images
+        self._orig_image: Optional[QImage] = None
+        self._vmin: int = 0
+        self._vmax: int = 255
+
     def clear(self) -> None:
         self._scene.clear()
         self._base_item = None
@@ -1260,6 +1410,9 @@ class BatchGraphicsView(QGraphicsView):
         self._id_index_to_id = {}
         self._selected_ids = set()
         self._overlay_np = None
+        self._orig_image = None
+        self._vmin = 0
+        self._vmax = 255
         self.selection_changed.emit(0)
 
     def load_master(
@@ -1288,7 +1441,15 @@ class BatchGraphicsView(QGraphicsView):
         self._id_list = [str(s) for s in list(id_list)]
         self._id_index_to_id = {i: s for i, s in enumerate(self._id_list)}
 
-        self._base_item = QGraphicsPixmapItem(pm)
+        # Keep original image and start with identity LUT
+        img = QImage(image_path)
+        if img.isNull():
+            # fallback to pixmap->image
+            img = pm.toImage()
+        self._orig_image = img.convertToFormat(QImage.Format_Grayscale8)
+        self._vmin, self._vmax = 0, 255
+
+        self._base_item = QGraphicsPixmapItem(QPixmap.fromImage(self._apply_lut()))
         self._scene.addItem(self._base_item)
 
         # Overlay item sits above
@@ -1300,6 +1461,44 @@ class BatchGraphicsView(QGraphicsView):
         self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.fitInView(self._base_item, Qt.KeepAspectRatio)
 
+    def set_window(self, vmin: int, vmax: int) -> None:
+        # Clamp and ensure vmin < vmax
+        vmin = max(0, min(255, int(vmin)))
+        vmax = max(0, min(255, int(vmax)))
+        if vmax <= vmin:
+            vmax = min(255, vmin + 1)
+        if self._vmin == vmin and self._vmax == vmax:
+            return
+        self._vmin, self._vmax = vmin, vmax
+        if self._orig_image is not None and self._base_item is not None:
+            self._base_item.setPixmap(QPixmap.fromImage(self._apply_lut()))
+            self.fitInView(self._base_item, Qt.KeepAspectRatio)
+
+    def _apply_lut(self) -> QImage:
+        # Apply linear window [vmin,vmax] to original grayscale image
+        if self._orig_image is None:
+            return QImage()
+        img = self._orig_image
+        w = img.width()
+        h = img.height()
+        bpl = img.bytesPerLine()
+        ptr = img.bits()
+        arr = np.frombuffer(ptr, dtype=np.uint8, count=bpl * h).reshape((h, bpl))
+        gray = arr[:, :w].astype(np.float32)
+        # scale
+        g = (gray - self._vmin) * (255.0 / max(1.0, (self._vmax - self._vmin)))
+        g = np.clip(g, 0, 255).astype(np.uint8)
+        # build new QImage
+        out = QImage(w, h, QImage.Format_Grayscale8)
+        out.fill(0)
+        out_ptr = out.bits()
+        out_bpl = out.bytesPerLine()
+        out_arr = np.frombuffer(out_ptr, dtype=np.uint8, count=out_bpl * h).reshape(
+            (h, out_bpl)
+        )
+        out_arr[:, :w] = g
+        return out
+
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         if self._base_item is not None:
@@ -1309,6 +1508,9 @@ class BatchGraphicsView(QGraphicsView):
         if event.button() == Qt.LeftButton and self._base_item is not None:
             self._lasso_path = QPainterPath(self.mapToScene(event.pos()))
             self._lassoing = True
+            # While lassoing, show crosshair and disable hand-drag
+            self.setDragMode(QGraphicsView.NoDrag)
+            self.setCursor(Qt.CrossCursor)
             event.accept()
             return
         super().mousePressEvent(event)
@@ -1348,6 +1550,9 @@ class BatchGraphicsView(QGraphicsView):
             self._lassoing = False
             self._lasso_path = None
             self._update_overlay()  # remove path overlay
+            # Restore hand-drag and cursor
+            self.setDragMode(QGraphicsView.ScrollHandDrag)
+            self.unsetCursor()
             event.accept()
             return
         super().keyPressEvent(event)
@@ -1404,6 +1609,9 @@ class BatchGraphicsView(QGraphicsView):
         self.selection_changed.emit(len(self._selected_ids))
         self._update_overlay()
         self._lasso_path = None
+        # Restore hand-drag and cursor
+        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.unsetCursor()
 
     def _selected_ids_from_mask(self, mask: np.ndarray) -> Set[str]:
         if self._label_map is None:

@@ -362,6 +362,8 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         frame_times_path=None,
         video2_path=None,
         frame_times2_path=None,
+        video3_path=None,
+        frame_times3_path=None,
         image_path=None,
         fixed_scale=False,
         low_profile_x=False,
@@ -414,6 +416,10 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             "REM": (255, 30, 145, 60),
             "Artifact": (255, 0, 0, 80),
             "unclear": (242, 255, 41, 50),
+            "ITI": (79, 247, 255, 60),
+            "Go": (0, 209, 40, 60),
+            "NoGo": (255, 0, 0, 80),
+            "Timeout": (255, 30, 145, 60),
         }
         self.labels = []
         self._select_start = None
@@ -437,6 +443,14 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         self._video2_worker = VideoWorker(cache_frames=120)
         self._video2_worker.moveToThread(self._video2_thread)
         self.last_video2_pixmap = None
+
+        # Optional third video
+        self.video3_frame_times = None
+        self._video3_is_open = False
+        self._video3_thread = QtCore.QThread(self)
+        self._video3_worker = VideoWorker(cache_frames=120)
+        self._video3_worker.moveToThread(self._video3_thread)
+        self.last_video3_pixmap = None
 
         # Playback
         self.is_playing = False
@@ -466,9 +480,12 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         self._video_worker.opened.connect(self._on_video_opened)
         self._video2_worker.frameReady.connect(self._on_frame2_ready)
         self._video2_worker.opened.connect(self._on_video2_opened)
+        self._video3_worker.frameReady.connect(self._on_frame3_ready)
+        self._video3_worker.opened.connect(self._on_video3_opened)
 
         self._video_thread.start()
         self._video2_thread.start()
+        self._video3_thread.start()
         # Prefer explicit file list if provided; otherwise fall back to dir
         if data_files:
             # Allow flexible formats: list[str], comma-separated strings, or "[a,b]".
@@ -519,6 +536,8 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             self._load_video_data(video_path, frame_times_path)
         if video2_path and frame_times2_path:
             self._load_video2_data(video2_path, frame_times2_path)
+        if video3_path and frame_times3_path:
+            self._load_video3_data(video3_path, frame_times3_path)
         elif image_path:
             self._load_static_image(image_path)
 
@@ -608,6 +627,15 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         )
         rl.addWidget(self.static_image_label, 2)
         self.static_image_label.installEventFilter(self)
+
+        # Third video label (same size weighting as video2, stacked below)
+        self.video3_label = QtWidgets.QLabel("No video 3")
+        self.video3_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.video3_label.setMinimumHeight(200)
+        self.video3_label.setStyleSheet("background-color:#222;border:1px solid #444;")
+        self.video3_label.hide()
+        rl.addWidget(self.video3_label, 2)
+        self.video3_label.installEventFilter(self)
 
         # Hypnogram overview plot (full-recording labels with moving window box)
         self.hypnogram_widget = pg.PlotWidget()
@@ -1092,6 +1120,45 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             self.video2_label.show()
             self._request_initial_frame()
 
+    # ---------- Video3 ----------
+    def _load_video3_data(self, vpath, ft_path):
+        self._stop_playback_if_playing()
+        self._video3_is_open = False
+        self.video3_frame_times = None
+
+        if not os.path.exists(vpath) or not os.path.exists(ft_path):
+            QtWidgets.QMessageBox.warning(
+                self, "File Not Found", "Video3 or frame times file does not exist."
+            )
+            return
+
+        QtCore.QMetaObject.invokeMethod(
+            self._video3_worker,
+            "open",
+            QtCore.Qt.QueuedConnection,
+            QtCore.Q_ARG(str, vpath),
+        )
+        try:
+            ft = np.load(ft_path).astype(float)
+            if ft.ndim != 1:
+                raise ValueError("frame_times.npy must be 1-D")
+            self.video3_frame_times = ft
+            self._update_status(f"Loaded frame_times3 ({len(ft)} frames).")
+            self.video3_label.show()
+            self._request_initial_frame()
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Frame times 3 error", str(e))
+            self.video3_frame_times = None
+
+    def _on_video3_opened(self, ok, msg):
+        if not ok:
+            self._video3_is_open = False
+            QtWidgets.QMessageBox.warning(self, "Video3", msg or "Failed to open.")
+        else:
+            self._video3_is_open = True
+            self.video3_label.show()
+            self._request_initial_frame()
+
     def _on_video_opened(self, ok, msg):
         if not ok:
             self._video_is_open = False
@@ -1103,6 +1170,10 @@ class SleepScorerApp(QtWidgets.QMainWindow):
     def _request_initial_frame(self):
         if self._video_is_open and self.video_frame_times is not None:
             self._set_cursor_time(self.cursor_time, update_slider=True)
+        if self._video2_is_open and self.video2_frame_times is not None:
+            self._set_cursor_time(self.cursor_time, update_slider=False)
+        if self._video3_is_open and self.video3_frame_times is not None:
+            self._set_cursor_time(self.cursor_time, update_slider=False)
 
     def _on_frame_ready(self, idx, qimg):
         if qimg is None or qimg.isNull():
@@ -1123,6 +1194,15 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         self.last_video2_pixmap = pix
         self._rescale_video2_frame()
 
+    def _on_frame3_ready(self, idx, qimg):
+        if qimg is None or qimg.isNull():
+            return
+        pix = QtGui.QPixmap.fromImage(qimg)
+        if pix.isNull():
+            return
+        self.last_video3_pixmap = pix
+        self._rescale_video3_frame()
+
     def _rescale_video_frame(self):
         if self.last_video_pixmap:
             scaled = self.last_video_pixmap.scaled(
@@ -1141,6 +1221,15 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             )
             self.video2_label.setPixmap(scaled)
 
+    def _rescale_video3_frame(self):
+        if self.last_video3_pixmap:
+            scaled = self.last_video3_pixmap.scaled(
+                self.video3_label.size(),
+                QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                QtCore.Qt.TransformationMode.SmoothTransformation,
+            )
+            self.video3_label.setPixmap(scaled)
+
     def _load_static_image(self, path):
         if not os.path.exists(path):
             self.static_image_label.setText("Image not found")
@@ -1156,6 +1245,8 @@ class SleepScorerApp(QtWidgets.QMainWindow):
     def _on_splitter_moved(self, pos, index):
         self._rescale_video_frame()
         self._rescale_static_image()
+        self._rescale_video2_frame()
+        self._rescale_video3_frame()
 
     def _rescale_static_image(self):
         if self.static_image_pixmap:
@@ -1765,6 +1856,14 @@ class SleepScorerApp(QtWidgets.QMainWindow):
                 QtCore.Qt.QueuedConnection,
                 QtCore.Q_ARG(int, int(idx2)),
             )
+        if self.video3_frame_times is not None and len(self.video3_frame_times):
+            idx3 = find_nearest_frame(self.video3_frame_times, self.cursor_time)
+            QtCore.QMetaObject.invokeMethod(
+                self._video3_worker,
+                "requestFrame",
+                QtCore.Qt.QueuedConnection,
+                QtCore.Q_ARG(int, int(idx3)),
+            )
 
         if not self.is_playing:
             self._update_status()
@@ -1932,6 +2031,10 @@ def main():
     parser.add_argument(
         "--frame_times2", type=str, help="Path to second video frame times (.npy)"
     )
+    parser.add_argument("--video3", type=str, help="Optional third video file (.mp4)")
+    parser.add_argument(
+        "--frame_times3", type=str, help="Path to third video frame times (.npy)"
+    )
     parser.add_argument(
         "--image", type=str, help="Path to static image file (.png, .jpg, etc.)"
     )
@@ -1958,6 +2061,8 @@ def main():
         frame_times_path=args.frame_times,
         video2_path=args.video2,
         frame_times2_path=args.frame_times2,
+        video3_path=args.video3,
+        frame_times3_path=args.frame_times3,
         image_path=args.image,
         fixed_scale=args.fixed_scale,
         low_profile_x=args.low_profile_x,
