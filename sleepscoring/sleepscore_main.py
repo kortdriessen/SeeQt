@@ -405,6 +405,9 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             "a": "Artifact",
             "t": "Transition-to-REM",
             "u": "unclear",
+            "o": "ON",
+            "f": "OFF",
+            "s": "spindle",
         }
         self.label_colors = {
             "Wake": (0, 209, 40, 60),
@@ -420,6 +423,9 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             "Go": (0, 209, 40, 60),
             "NoGo": (255, 0, 0, 80),
             "Timeout": (255, 30, 145, 60),
+            "ON": (0, 209, 40, 60),
+            "OFF": (255, 0, 0, 80),
+            "spindle": (79, 247, 255, 60),
         }
         self.labels = []
         self._select_start = None
