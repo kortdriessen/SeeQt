@@ -53,8 +53,6 @@ if rois:
     all_rois = st.checkbox("include ROIs for all acquisitions?", value=False)
 synapses = st.checkbox("Include Synaptic Traces", value=False)
 eye = st.checkbox("Include Eye Traces", value=False)
-glut_sums = st.checkbox("Include Glutamate Sums", value=False)
-
 
 traces = []
 trace_colors = []
@@ -88,17 +86,6 @@ for f in os.listdir(main_data_dir):
             time_file = f.replace("_y.npy", "_t.npy")
             traces.append(os.path.join(main_data_dir, time_file))
             trace_colors.append(load_blue)
-
-if glut_sums:
-    glut_sums_dir = f"Z:\\slap_mi\\analysis_materials\\{subject}\\{exp}\\scoring_data\\sync_block-{sb}\\scope_traces\\synapses\\{acq_id}\\glutamate_sums\\fracactive"
-    glut_sums_options = [f for f in os.listdir(glut_sums_dir) if f.endswith("_y.npy")]
-    glut_sums_to_load = st.multiselect("Glutamate Sums to Load", glut_sums_options)
-    for f in glut_sums_to_load:
-        yname = f
-        tname = f.replace("_y.npy", "_t.npy")
-        traces.append(os.path.join(glut_sums_dir, yname))
-        traces.append(os.path.join(glut_sums_dir, tname))
-        trace_colors.append(glut_sum_green)
 
 if rois:
     if all_rois:
@@ -235,6 +222,15 @@ if write_temp_hypno:
 
 low_profile_x = st.checkbox("Low Profile X", value=False)
 
+video_2_path = f"Z:\\slap_mi\\analysis_materials\\{subject}\\{exp}\\synaptic_videos\\dmd1_20min.mp4"
+video_3_path = f"Z:\\slap_mi\\analysis_materials\\{subject}\\{exp}\\synaptic_videos\\dmd2_20min.mp4"
+
+frame_times_2_path = (
+    f"Z:\\slap_mi\\analysis_materials\\{subject}\\{exp}\\synaptic_videos\\frames2.npy"
+)
+frame_times_3_path = (
+    f"Z:\\slap_mi\\analysis_materials\\{subject}\\{exp}\\synaptic_videos\\frames3.npy"
+)
 
 if st.button("Launch GUI"):
     # Build argument list and invoke without shell quoting issues
@@ -251,6 +247,10 @@ if st.button("Launch GUI"):
         pupil_path,
         "--frame_times",
         frame_times_path,
+        "--video2",
+        video_2_path,
+        "--frame_times2",
+        frame_times_2_path,
         "--colors",
         *trace_colors,
         "--fixed_scale",
