@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QCloseEvent
+from PySide6.QtGui import QAction, QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -105,6 +105,9 @@ class LabNotebookMainWindow(QMainWindow):
         center_splitter.addWidget(self.notes_view)
         center_splitter.setStretchFactor(0, 3)
         center_splitter.setStretchFactor(1, 1)
+        center_splitter.splitterMoved.connect(self._handle_notes_splitter_moved)
+        self.center_splitter = center_splitter
+        self._notes_last_size = 250
 
         info_frame = QFrame(self)
         info_frame.setFrameShape(QFrame.Shape.StyledPanel)
@@ -148,7 +151,11 @@ class LabNotebookMainWindow(QMainWindow):
         self._create_menus()
         self._update_materials_info(None)
 
+        self._notes_toggle_shortcut = QShortcut(QKeySequence("Ctrl+N"), self)
+        self._notes_toggle_shortcut.activated.connect(self._toggle_notes_panel)
+
         QTimer.singleShot(0, self._prompt_for_root_directory)
+        QTimer.singleShot(0, self._collapse_notes_initial)
 
     def _create_actions(self) -> None:
         self.open_directory_action = QAction("Open &Root Directory...", self)
@@ -237,6 +244,38 @@ class LabNotebookMainWindow(QMainWindow):
             self.materials_info.setText("No materials.txt summary available.")
         else:
             self.materials_info.setText(text.strip())
+
+    def _collapse_notes_initial(self) -> None:
+        if not hasattr(self, "center_splitter"):
+            return
+        sizes = self.center_splitter.sizes()
+        total = sum(sizes) if sizes else 0
+        if total == 0:
+            self.center_splitter.setSizes([1, 0])
+        else:
+            self.center_splitter.setSizes([total, 0])
+
+    def _toggle_notes_panel(self) -> None:
+        sizes = self.center_splitter.sizes()
+        if not sizes or len(sizes) < 2:
+            return
+        total = sum(sizes)
+        if total == 0:
+            self.center_splitter.setSizes([1, 0])
+            return
+        notes_size = sizes[1]
+        if notes_size < 40:
+            desired = max(self._notes_last_size, total // 3, 200)
+            desired = min(desired, max(200, total - 100))
+            self.center_splitter.setSizes([max(100, total - desired), desired])
+        else:
+            self._notes_last_size = notes_size
+            self.center_splitter.setSizes([total, 0])
+
+    def _handle_notes_splitter_moved(self, pos: int, index: int) -> None:
+        sizes = self.center_splitter.sizes()
+        if len(sizes) >= 2 and sizes[1] > 0:
+            self._notes_last_size = sizes[1]
 
     @staticmethod
     def _build_context(root: Path, materials_dir: Path) -> MaterialsContext:

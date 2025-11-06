@@ -636,6 +636,7 @@ DEFAULT_HEADERS = [
     "soma-ID",
     "soma-depth",
     "dend-type",
+    "dend-ID",
     "notes",
 ]
 
@@ -975,6 +976,21 @@ class MainWindow(QMainWindow):
         self.column_combo.addItem(new_col)
         self.status.showMessage(f"Added column '{new_col}'", 2000)
 
+    def _ensure_column(self, column_name: str) -> None:
+        if not self.store.directory:
+            return
+        if column_name == "source-ID" or column_name in self.store.columns:
+            return
+        headers = list(self.store.columns)
+        headers.append(column_name)
+        save_headers(self.store.directory, headers)
+        self.store.columns = headers
+        for rec in self.store.records:
+            rec.values.setdefault(column_name, None)
+        self.store.save()
+        self.table_model.handle_store_changed()
+        self.column_combo.addItem(column_name)
+
     def _reload_hotkeys(self) -> None:
         # Re-initialize from directory to reapply YAML and JSON
         if not self.store.directory:
@@ -1171,6 +1187,36 @@ class MainWindow(QMainWindow):
                     )
                     self._update_status()
                     return True
+
+        # Dend-ID input (Ctrl+Shift+D)
+        if key == Qt.Key_D and (mod & (Qt.ControlModifier | Qt.ShiftModifier)) == (
+            Qt.ControlModifier | Qt.ShiftModifier
+        ):
+            # Ensure dend-ID column exists
+            self._ensure_column("dend-ID")
+            text, ok = QInputDialog.getText(self, "Dend-ID", "Enter dend-ID:")
+            if ok:
+                col = "dend-ID"
+                val = text
+                if getattr(self, "batch_mode", False):
+                    selected_ids = self.batch_view.get_selected_ids()
+                    if selected_ids:
+                        updated = self.store.set_value_for_ids(selected_ids, col, val)
+                        self.status.showMessage(
+                            f"Set dend-ID for {updated} selected IDs"
+                        )
+                        return True
+                if self.current_row >= 0:
+                    self.store.set_value(self.current_row, col, val)
+                    idx = self.table_model.index(
+                        self.current_row, self.store.columns.index(col)
+                    )
+                    self.table_model.dataChanged.emit(
+                        idx, idx, [Qt.DisplayRole, Qt.EditRole]
+                    )
+                    self._update_status()
+                    return True
+            return True
 
         # Soma-depth input (Ctrl+D)
         if key == Qt.Key_D and (mod & (Qt.ControlModifier)) == Qt.ControlModifier:
