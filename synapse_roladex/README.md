@@ -189,7 +189,7 @@ Hotkeys and value entry:
 - Ctrl+Shift+V: “Enter value” dialog → choose column (dropdown), then enter text value; applies to selection or current row
 - Ctrl+N: enter notes text; applies to selection or current row (column: `notes`)
 - Ctrl+D: enter numeric soma depth; applies to selection or current row (column: `soma-depth`)
-- Ctrl+Shift+D: enter dend-ID text; creates the `dend-ID` column if missing, then applies to selection or current row
+- n: enter dend-ID text; creates the `dend-ID` column if missing, then applies to selection or current row (reserved; not used for mapping)
 
 Batch mode:
 - Ctrl+B: toggle batch mode

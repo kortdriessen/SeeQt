@@ -1188,10 +1188,8 @@ class MainWindow(QMainWindow):
                     self._update_status()
                     return True
 
-        # Dend-ID input (Ctrl+Shift+D)
-        if key == Qt.Key_D and (mod & (Qt.ControlModifier | Qt.ShiftModifier)) == (
-            Qt.ControlModifier | Qt.ShiftModifier
-        ):
+        # Dend-ID input ('n' key)
+        if key == Qt.Key_N and mod == Qt.NoModifier:
             # Ensure dend-ID column exists
             self._ensure_column("dend-ID")
             text, ok = QInputDialog.getText(self, "Dend-ID", "Enter dend-ID:")

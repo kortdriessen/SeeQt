@@ -28,6 +28,7 @@ from .directory_tree import MaterialsTree, ROLE_IS_MATERIALS, ROLE_PATH
 from .notes import NotesView
 from .utils import read_text_file
 import subprocess
+from tiffviewer.viewer import launch_tiff_viewer
 
 
 @dataclass
@@ -37,6 +38,7 @@ class MaterialsContext:
     canvas_dir: Optional[Path]
     notes_md: Optional[Path]
     synapse_ids_dir: Optional[Path]
+    roi_locations_dir: Optional[Path]
     materials_txt: Optional[str]
 
 
@@ -88,6 +90,7 @@ class LabNotebookMainWindow(QMainWindow):
 
         self._root_path: Optional[Path] = None
         self._context: Optional[MaterialsContext] = None
+        self._tiff_windows: list[QMainWindow] = []
 
         self.sidebar = MaterialsTree(self)
         self.sidebar.materialsSelected.connect(self._handle_materials_selected)
@@ -115,11 +118,28 @@ class LabNotebookMainWindow(QMainWindow):
         info_layout.setContentsMargins(8, 4, 8, 4)
         info_layout.addWidget(QLabel("materials.txt:", self))
         info_layout.addWidget(self.materials_info, 1)
+        info_layout.addStretch(1)
+
+        self.view_tiffs_button = QPushButton("View TIFFs", self)
+        self.view_tiffs_button.setToolTip(
+            "Open selected TIFF stacks in dedicated viewers."
+        )
+        self.view_tiffs_button.clicked.connect(self._open_tiff_viewers)
+        info_layout.addWidget(self.view_tiffs_button, 0, Qt.AlignmentFlag.AlignRight)
 
         self.launch_synapse_button = QPushButton("Launch Synapse Labeller", self)
-        self.launch_synapse_button.setToolTip("Launch synapse_labeller.py for each synapse_ids sub-directory.")
+        self.launch_synapse_button.setToolTip(
+            "Launch synapse_labeller.py for each synapse_ids sub-directory."
+        )
         self.launch_synapse_button.clicked.connect(self._launch_synapse_labellers)
-        info_layout.addWidget(self.launch_synapse_button, 0, Qt.AlignmentFlag.AlignRight)
+        info_layout.addWidget(
+            self.launch_synapse_button, 0, Qt.AlignmentFlag.AlignRight
+        )
+
+        self.label_rois_button = QPushButton("Label ROIs", self)
+        self.label_rois_button.setToolTip("Open ROI TIFFs in napari for labeling.")
+        self.label_rois_button.clicked.connect(self._launch_roi_labeler)
+        info_layout.addWidget(self.label_rois_button, 0, Qt.AlignmentFlag.AlignRight)
 
         center_widget = QWidget(self)
         center_layout = QVBoxLayout(center_widget)
@@ -187,7 +207,9 @@ class LabNotebookMainWindow(QMainWindow):
         self.addToolBar(toolbar)
 
     def _prompt_for_root_directory(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "Select experiment root directory")
+        directory = QFileDialog.getExistingDirectory(
+            self, "Select experiment root directory"
+        )
         if not directory:
             if not self._root_path:
                 QMessageBox.information(
@@ -211,7 +233,10 @@ class LabNotebookMainWindow(QMainWindow):
     def _select_first_materials(self) -> None:
         if self.sidebar.topLevelItemCount() == 0:
             return
-        stack = [self.sidebar.topLevelItem(i) for i in range(self.sidebar.topLevelItemCount())]
+        stack = [
+            self.sidebar.topLevelItem(i)
+            for i in range(self.sidebar.topLevelItemCount())
+        ]
         while stack:
             item = stack.pop(0)
             if item.data(0, ROLE_IS_MATERIALS):
@@ -282,14 +307,18 @@ class LabNotebookMainWindow(QMainWindow):
         canvas_dir = materials_dir / "canvas"
         notes_md = materials_dir / "notes.md"
         synapse_ids_dir = materials_dir / "synapse_ids"
+        roi_locations_dir = materials_dir / "roi_locations"
         materials_txt_path = materials_dir / "materials.txt"
-        materials_txt = read_text_file(materials_txt_path) if materials_txt_path.exists() else None
+        materials_txt = (
+            read_text_file(materials_txt_path) if materials_txt_path.exists() else None
+        )
         return MaterialsContext(
             root=root,
             materials_dir=materials_dir,
             canvas_dir=canvas_dir if canvas_dir.exists() else None,
             notes_md=notes_md if notes_md.exists() else None,
             synapse_ids_dir=synapse_ids_dir if synapse_ids_dir.exists() else None,
+            roi_locations_dir=roi_locations_dir if roi_locations_dir.exists() else None,
             materials_txt=materials_txt,
         )
 
@@ -305,19 +334,68 @@ class LabNotebookMainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         event.accept()
 
+    def _open_tiff_viewers(self) -> None:
+        start_dir: Path | str
+        if self._context and self._context.materials_dir:
+            start_dir = self._context.materials_dir
+        elif self._root_path:
+            start_dir = self._root_path
+        else:
+            start_dir = Path.home()
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select TIFF stacks",
+            str(start_dir),
+            "TIFF files (*.tif *.tiff)",
+        )
+        if not files:
+            return
+        launched = 0
+        for file in files:
+            window = launch_tiff_viewer(Path(file))
+            if window is None:
+                continue
+            self._tiff_windows.append(window)
+            window.destroyed.connect(
+                lambda _obj=None, w=window: self._cleanup_tiff_window(w)
+            )
+            launched += 1
+        if launched == 0:
+            QMessageBox.warning(
+                self,
+                "TIFF Viewer",
+                "No TIFF viewers were created. Check console for errors.",
+            )
+
+    def _cleanup_tiff_window(self, window: QMainWindow) -> None:
+        try:
+            self._tiff_windows.remove(window)
+        except ValueError:
+            pass
+
     def _launch_synapse_labellers(self) -> None:
         if not self._context:
-            QMessageBox.information(self, "No Materials Selected", "Select a materials directory first.")
+            QMessageBox.information(
+                self, "No Materials Selected", "Select a materials directory first."
+            )
             return
 
         synapse_dir = self._context.synapse_ids_dir
         if not synapse_dir or not synapse_dir.exists():
-            QMessageBox.information(self, "No synapse_ids Folder", "This materials directory has no synapse_ids folder.")
+            QMessageBox.information(
+                self,
+                "No synapse_ids Folder",
+                "This materials directory has no synapse_ids folder.",
+            )
             return
 
         subdirs = sorted([p for p in synapse_dir.iterdir() if p.is_dir()])
         if not subdirs:
-            QMessageBox.information(self, "No synapse_ids Subdirectories", "No subdirectories found within synapse_ids.")
+            QMessageBox.information(
+                self,
+                "No synapse_ids Subdirectories",
+                "No subdirectories found within synapse_ids.",
+            )
             return
 
         project_root = Path(__file__).resolve().parents[2]
@@ -351,7 +429,48 @@ class LabNotebookMainWindow(QMainWindow):
                 )
 
         if launched:
-            self._status_bar.showMessage(f"Launched {launched} synapse labeller instance(s).")
+            self._status_bar.showMessage(
+                f"Launched {launched} synapse labeller instance(s)."
+            )
+
+    def _launch_roi_labeler(self) -> None:
+        if not self._context or not self._context.roi_locations_dir:
+            QMessageBox.information(
+                self,
+                "ROI Locations Not Found",
+                "This materials directory does not contain an 'roi_locations' folder.",
+            )
+            return
+
+        roi_dir = self._context.roi_locations_dir
+        tif_files = sorted(
+            [p for p in roi_dir.glob("*.tif")] + [p for p in roi_dir.glob("*.tiff")],
+            key=lambda p: p.name.lower(),
+        )
+        tif_files = [p for p in tif_files if "mask" not in p.name.lower()]
+
+        if not tif_files:
+            QMessageBox.information(
+                self,
+                "No ROI TIFFs",
+                "No TIFF files (excluding *mask*) were found in the 'roi_locations' folder.",
+            )
+            return
+
+        try:
+            import napari  # type: ignore
+        except ImportError:
+            QMessageBox.critical(
+                self,
+                "Napari Not Available",
+                "Napari is not installed in this environment.",
+            )
+            return
+
+        viewer = napari.Viewer(title=f"ROI Labels - {roi_dir.name}")
+        for tif in tif_files:
+            viewer.open(str(tif), stack=True)
+        viewer.window._qt_window.show()
 
 
 def create_app() -> tuple[QApplication, LabNotebookMainWindow]:

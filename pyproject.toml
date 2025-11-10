@@ -5,6 +5,7 @@ description = "Performant data viewers implemented in PySide6"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "napari>=0.6.6",
     "numpy>=2.3.3",
     "opencv-python>=4.11.0.86",
     "pillow>=11.3.0",
@@ -13,4 +14,5 @@ dependencies = [
     "pyside6>=6.9.2",
     "pyyaml>=6.0.3",
     "streamlit>=1.50.0",
+    "tifffile>=2025.10.16",
 ]

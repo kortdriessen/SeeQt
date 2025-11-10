@@ -571,7 +571,7 @@ class CanvasToolControls(QWidget):
 
         self.fullscreen_button = QToolButton(self)
         self.fullscreen_button.setText("Full Screen")
-        self.fullscreen_button.setToolTip("Toggle full screen view (F11)")
+        self.fullscreen_button.setToolTip("Toggle full screen view (Ctrl+F)")
         self.fullscreen_button.clicked.connect(self.fullscreenRequested.emit)
         layout.addWidget(self.fullscreen_button)
 
@@ -736,6 +736,14 @@ class CanvasFullScreenWindow(QMainWindow):
         self.controls.widthChanged.connect(self._forward_width_change)
         self.controls.eraserToggled.connect(self._forward_eraser_toggle)
 
+        self._undo_shortcut = QShortcut(QKeySequence("Ctrl+Z"), self)
+        self._undo_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._undo_shortcut.activated.connect(self.view.undo_last_stroke)
+
+        self._fullscreen_shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
+        self._fullscreen_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._fullscreen_shortcut.activated.connect(self.close)
+
         close_action = QAction("Exit Full Screen", self)
         close_action.setShortcut(QKeySequence(Qt.Key.Key_Escape))
         close_action.triggered.connect(self.close)
@@ -820,6 +828,7 @@ class CanvasPanel(QWidget):
         self._update_placeholder_visibility()
 
         QShortcut(QKeySequence("Ctrl+Z"), self, activated=self._handle_undo)
+        QShortcut(QKeySequence("Ctrl+F"), self, activated=self._handle_fullscreen_request)
 
     def load_images(self, image_paths: Sequence[Path]) -> None:
         self._clear_views()
