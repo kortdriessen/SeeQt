@@ -478,6 +478,14 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         self.hypnogram_zoomed = False
         self.hypnogram_zoom_padding = 30.0
 
+        # Right panel layout references and video stretch defaults (used in _build_ui)
+        self.right_layout = None
+        self.videos_layout = None
+        self.videos_widget = None
+        self.video1_stretch = 3
+        self.video2_stretch = 2
+        self.video3_stretch = 2
+
         self._build_ui()
 
         self.y_axis_dialog = None
@@ -599,11 +607,18 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         right = QtWidgets.QWidget()
         right.setMinimumWidth(150)
         rl = QtWidgets.QVBoxLayout(right)
+        self.right_layout = rl
+        # Group videos into a dedicated container so we can control relative sizes
+        self.videos_widget = QtWidgets.QWidget()
+        self.videos_layout = QtWidgets.QVBoxLayout(self.videos_widget)
+        self.videos_layout.setContentsMargins(0, 0, 0, 0)
+        self.videos_layout.setSpacing(4)
+
         self.video_label = QtWidgets.QLabel("No video")
         self.video_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.video_label.setMinimumHeight(240)
         self.video_label.setStyleSheet("background-color:#222;border:1px solid #444;")
-        rl.addWidget(self.video_label, 3)
+        self.videos_layout.addWidget(self.video_label, self.video1_stretch)
         self.video_label.installEventFilter(self)
 
         row = QtWidgets.QHBoxLayout()
@@ -615,6 +630,8 @@ class SleepScorerApp(QtWidgets.QMainWindow):
 
         roww = QtWidgets.QWidget()
         roww.setLayout(row)
+        # Add videos container before cursor row
+        rl.addWidget(self.videos_widget, 1)
         rl.addWidget(roww)
 
         # Second video label (replaces image if video2 is loaded)
@@ -623,7 +640,7 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         self.video2_label.setMinimumHeight(200)
         self.video2_label.setStyleSheet("background-color:#222;border:1px solid #444;")
         self.video2_label.hide()
-        rl.addWidget(self.video2_label, 2)
+        self.videos_layout.addWidget(self.video2_label, self.video2_stretch)
         self.video2_label.installEventFilter(self)
 
         self.static_image_label = QtWidgets.QLabel("No image loaded")
@@ -640,7 +657,7 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         self.video3_label.setMinimumHeight(200)
         self.video3_label.setStyleSheet("background-color:#222;border:1px solid #444;")
         self.video3_label.hide()
-        rl.addWidget(self.video3_label, 2)
+        self.videos_layout.addWidget(self.video3_label, self.video3_stretch)
         self.video3_label.installEventFilter(self)
 
         # Hypnogram overview plot (full-recording labels with moving window box)
@@ -675,6 +692,8 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         self.status = self.statusBar()
         self._update_status()
         self._build_menu()
+        # Apply initial video stretches
+        self._apply_video_stretches()
 
     def _build_menu(self):
         mfile = self.menuBar().addMenu("&File")
@@ -717,6 +736,12 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         scroll_speed_action = QtGui.QAction("Adjust Smooth Scroll Speed...", self)
         scroll_speed_action.triggered.connect(self._adjust_scroll_speed)
         mview.addAction(scroll_speed_action)
+
+        adjust_video_sizes_action = QtGui.QAction(
+            "Adjust Secondary Videos Size...", self
+        )
+        adjust_video_sizes_action.triggered.connect(self._adjust_secondary_video_sizes)
+        mview.addAction(adjust_video_sizes_action)
 
         mhelp = self.menuBar().addMenu("&Help")
         hh = QtGui.QAction("Shortcuts / Help", self)
@@ -1150,6 +1175,7 @@ class SleepScorerApp(QtWidgets.QMainWindow):
                 raise ValueError("frame_times.npy must be 1-D")
             self.video3_frame_times = ft
             self._update_status(f"Loaded frame_times3 ({len(ft)} frames).")
+            self.static_image_label.hide()
             self.video3_label.show()
             self._request_initial_frame()
         except Exception as e:
@@ -1544,6 +1570,13 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         ktxt = ev.text().lower()
         key = ev.key()
 
+        # Toggle hypnogram visibility with 'h'
+        if ktxt == "h":
+            if self.hypnogram_widget is not None:
+                vis = self.hypnogram_widget.isVisible()
+                self.hypnogram_widget.setVisible(not vis)
+            return
+
         if ev.modifiers() == QtCore.Qt.KeyboardModifier.ControlModifier:
             if key == QtCore.Qt.Key.Key_1:
                 self._zoom_active_plot_y(0.9)
@@ -1929,6 +1962,99 @@ class SleepScorerApp(QtWidgets.QMainWindow):
                 ax.setWidth(int(target))
         except Exception:
             pass
+
+    # ---------- Video size allocation (right panel) ----------
+    def _apply_video_stretches(self):
+        if self.videos_layout is None:
+            return
+        # Apply stretch to video widgets; hidden widgets will not take space
+        try:
+
+            def set_stretch(widget, stretch):
+                idx = self.videos_layout.indexOf(widget)
+                if idx >= 0:
+                    self.videos_layout.setStretch(idx, max(0, int(stretch)))
+
+            set_stretch(self.video_label, self.video1_stretch)
+            set_stretch(self.video2_label, self.video2_stretch)
+            set_stretch(self.video3_label, self.video3_stretch)
+        except Exception:
+            pass
+
+    def _set_video_stretches(self, v1: int, v2: int, v3: int):
+        self.video1_stretch = max(0, int(v1))
+        self.video2_stretch = max(0, int(v2))
+        self.video3_stretch = max(0, int(v3))
+        self._apply_video_stretches()
+        # Trigger a resize to update scaling
+        QtCore.QTimer.singleShot(0, self._rescale_video_frame)
+        QtCore.QTimer.singleShot(0, self._rescale_video2_frame)
+        QtCore.QTimer.singleShot(0, self._rescale_video3_frame)
+
+    def _adjust_secondary_video_sizes(self):
+        # Determine how many secondary videos are visible
+        vid2_present = self.video2_label.isVisible()
+        vid3_present = self.video3_label.isVisible()
+        if not vid2_present and not vid3_present:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Adjust Sizes",
+                "Secondary videos are not loaded.",
+            )
+            return
+
+        # Compute current total and primary share percentage
+        total = max(
+            1,
+            self.video1_stretch
+            + (self.video2_stretch if vid2_present else 0)
+            + (self.video3_stretch if vid3_present else 0),
+        )
+        current_primary_pct = int(round(100.0 * self.video1_stretch / total))
+
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Adjust Secondary Videos Size")
+        lay = QtWidgets.QVBoxLayout(dlg)
+        label = QtWidgets.QLabel("Primary video (Video 1) share (% of video area):")
+        lay.addWidget(label)
+        slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        slider.setRange(5, 95)
+        slider.setValue(current_primary_pct)
+        lay.addWidget(slider)
+
+        pct_lbl = QtWidgets.QLabel(f"{current_primary_pct:d}%")
+        lay.addWidget(pct_lbl)
+
+        btns = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        lay.addWidget(btns)
+
+        def on_change(val):
+            pct_lbl.setText(f"{val:d}%")
+            # Live preview: recompute stretches based on percentage
+            primary = int(val)
+            remainder = 100 - primary
+            v1 = primary
+            if vid2_present and vid3_present:
+                v2 = max(1, remainder // 2)
+                v3 = max(1, remainder - v2)
+            elif vid2_present:
+                v2 = remainder
+                v3 = 0
+            else:
+                v2 = 0
+                v3 = remainder
+            self._set_video_stretches(v1, v2, v3)
+
+        slider.valueChanged.connect(on_change)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+
+        # Initialize preview
+        on_change(slider.value())
+        dlg.exec()
+        # If canceled, nothing to do; if accepted, stretches already applied
 
     # ---------- Help/Status & cleanup ----------
 

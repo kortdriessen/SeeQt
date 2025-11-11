@@ -47,7 +47,7 @@ acq_ids = [
 ]
 
 acq_id = st.selectbox("Acquisition ID for ROIs", acq_ids, key="acq_id")
-
+loc, acq = acq_id.split("--")
 rois = st.checkbox("Include Soma ROIs", value=False)
 if rois:
     all_rois = st.checkbox("include ROIs for all acquisitions?", value=False)
@@ -55,6 +55,14 @@ synapses = st.checkbox("Include Synaptic Traces", value=False)
 eye = st.checkbox("Include Eye Traces", value=False)
 glut_sums = st.checkbox("Include Glutamate Sums", value=False)
 
+synaptic_videos = st.checkbox("Include Synaptic Videos", value=False)
+
+if synaptic_videos:
+    video_2_path = f"Z:\\slap_mi\\analysis_materials\\plots\\movies\\{subject}\\{exp}\\{loc}\\{acq}\\full\\imaging_data_DMD1.mp4"
+    video_3_path = f"Z:\\slap_mi\\analysis_materials\\plots\\movies\\{subject}\\{exp}\\{loc}\\{acq}\\full\\imaging_data_DMD2.mp4"
+
+    frame_times_2_path = f"Z:\\slap_mi\\analysis_materials\\plots\\movies\\{subject}\\{exp}\\{loc}\\{acq}\\full\\imaging_frame_times.npy"
+    frame_times_3_path = f"Z:\\slap_mi\\analysis_materials\\plots\\movies\\{subject}\\{exp}\\{loc}\\{acq}\\full\\imaging_frame_times.npy"
 
 traces = []
 trace_colors = []
@@ -256,4 +264,17 @@ if st.button("Launch GUI"):
         "--fixed_scale",
         low_profile_x_arg,
     ]
+    if synaptic_videos:
+        cmd.extend(
+            [
+                "--video2",
+                video_2_path,
+                "--frame_times2",
+                frame_times_2_path,
+                "--video3",
+                video_3_path,
+                "--frame_times3",
+                frame_times_3_path,
+            ]
+        )
     subprocess.run(cmd, check=True)
