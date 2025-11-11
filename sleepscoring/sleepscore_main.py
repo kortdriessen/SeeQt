@@ -466,6 +466,10 @@ class SleepScorerApp(QtWidgets.QMainWindow):
 
         # Smooth scroll settings (fraction of window per wheel step)
         self.smooth_scroll_fraction = 0.10
+        # Playback speed (1.0 = real time)
+        self.playback_speed = 1.0
+        # Which video to use for frame-by-frame stepping (1, 2, or 3)
+        self.frame_step_source = 1
 
         # Static Image (hidden if second video is loaded)
         self.static_image_pixmap = None
@@ -743,6 +747,51 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         adjust_video_sizes_action.triggered.connect(self._adjust_secondary_video_sizes)
         mview.addAction(adjust_video_sizes_action)
 
+        # Show/Hide videos (with hotkeys)
+        self.action_show_v1 = QtGui.QAction("Show Video 1", self)
+        self.action_show_v1.setCheckable(True)
+        self.action_show_v1.setChecked(True)
+        self.action_show_v1.setShortcut(QtGui.QKeySequence("Ctrl+Shift+1"))
+        self.action_show_v1.toggled.connect(lambda ch: self._set_video_visible(1, ch))
+        mview.addAction(self.action_show_v1)
+
+        self.action_show_v2 = QtGui.QAction("Show Video 2", self)
+        self.action_show_v2.setCheckable(True)
+        self.action_show_v2.setChecked(False)
+        self.action_show_v2.setShortcut(QtGui.QKeySequence("Ctrl+Shift+2"))
+        self.action_show_v2.toggled.connect(lambda ch: self._set_video_visible(2, ch))
+        mview.addAction(self.action_show_v2)
+
+        self.action_show_v3 = QtGui.QAction("Show Video 3", self)
+        self.action_show_v3.setCheckable(True)
+        self.action_show_v3.setChecked(False)
+        self.action_show_v3.setShortcut(QtGui.QKeySequence("Ctrl+Shift+3"))
+        self.action_show_v3.toggled.connect(lambda ch: self._set_video_visible(3, ch))
+        mview.addAction(self.action_show_v3)
+
+        # Frame-step target selector
+        step_menu = mview.addMenu("Frame Step Target")
+        self.step_action_group = QtGui.QActionGroup(self)
+        self.step_action_group.setExclusive(True)
+        self.step_target_v1 = QtGui.QAction("Video 1", self, checkable=True)
+        self.step_target_v2 = QtGui.QAction("Video 2", self, checkable=True)
+        self.step_target_v3 = QtGui.QAction("Video 3", self, checkable=True)
+        self.step_action_group.addAction(self.step_target_v1)
+        self.step_action_group.addAction(self.step_target_v2)
+        self.step_action_group.addAction(self.step_target_v3)
+        self.step_target_v1.setChecked(True)
+        self.step_target_v1.triggered.connect(lambda: self._set_frame_step_source(1))
+        self.step_target_v2.triggered.connect(lambda: self._set_frame_step_source(2))
+        self.step_target_v3.triggered.connect(lambda: self._set_frame_step_source(3))
+        step_menu.addAction(self.step_target_v1)
+        step_menu.addAction(self.step_target_v2)
+        step_menu.addAction(self.step_target_v3)
+
+        # Playback speed
+        playback_speed_action = QtGui.QAction("Set Playback Speed...", self)
+        playback_speed_action.triggered.connect(self._adjust_playback_speed)
+        mview.addAction(playback_speed_action)
+
         mhelp = self.menuBar().addMenu("&Help")
         hh = QtGui.QAction("Shortcuts / Help", self)
         hh.triggered.connect(self._show_help)
@@ -763,6 +812,24 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             val, ok = (self.smooth_scroll_fraction, False)
         if ok:
             self.smooth_scroll_fraction = float(max(0.001, min(1.0, val)))
+
+    def _adjust_playback_speed(self):
+        try:
+            val, ok = QtWidgets.QInputDialog.getDouble(
+                self,
+                "Set Playback Speed",
+                "Playback speed (0.25x - 4.0x, step 0.25):",
+                float(self.playback_speed),
+                0.25,
+                4.0,
+                2,
+            )
+        except Exception:
+            val, ok = (self.playback_speed, False)
+        if ok:
+            # Quantize to nearest 0.25
+            q = round(float(val) / 0.25) * 0.25
+            self.playback_speed = float(max(0.25, min(4.0, q)))
 
     # ---------- Data ----------
     def _load_series_from_dir(self, folder):
@@ -1584,6 +1651,26 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             if key == QtCore.Qt.Key.Key_2:
                 self._zoom_active_plot_y(1.1)
                 return
+        # Ctrl+Shift+1/2/3 toggle video visibility
+        if ev.modifiers() == (
+            QtCore.Qt.KeyboardModifier.ControlModifier
+            | QtCore.Qt.KeyboardModifier.ShiftModifier
+        ):
+            if key == QtCore.Qt.Key.Key_1:
+                self._set_video_visible(1, not self.video_label.isVisible())
+                if self.action_show_v1:
+                    self.action_show_v1.setChecked(self.video_label.isVisible())
+                return
+            if key == QtCore.Qt.Key.Key_2:
+                self._set_video_visible(2, not self.video2_label.isVisible())
+                if self.action_show_v2:
+                    self.action_show_v2.setChecked(self.video2_label.isVisible())
+                return
+            if key == QtCore.Qt.Key.Key_3:
+                self._set_video_visible(3, not self.video3_label.isVisible())
+                if self.action_show_v3:
+                    self.action_show_v3.setChecked(self.video3_label.isVisible())
+                return
 
         if key == QtCore.Qt.Key.Key_Space:
             self._toggle_playback()
@@ -1594,6 +1681,13 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             return
         if key in (QtCore.Qt.Key.Key_BracketLeft, QtCore.Qt.Key.Key_PageUp):
             self._page(-1)
+            return
+        # Left/Right arrow = frame step on selected video
+        if key == QtCore.Qt.Key.Key_Right:
+            self._step_frame(+1)
+            return
+        if key == QtCore.Qt.Key.Key_Left:
+            self._step_frame(-1)
             return
 
         if (
@@ -1636,6 +1730,41 @@ class SleepScorerApp(QtWidgets.QMainWindow):
     def _toggle_hypnogram_zoom(self):
         self.hypnogram_zoomed = not self.hypnogram_zoomed
         self._update_hypnogram_xrange()
+
+    def _set_frame_step_source(self, which: int):
+        self.frame_step_source = int(which)
+
+    def _available_frame_times(self, which: int):
+        if which == 1 and self.video_frame_times is not None:
+            return self.video_frame_times
+        if which == 2 and self.video2_frame_times is not None:
+            return self.video2_frame_times
+        if which == 3 and self.video3_frame_times is not None:
+            return self.video3_frame_times
+        return None
+
+    def _fallback_frame_source(self) -> int:
+        # Choose first available in order 1,2,3
+        if self.video_frame_times is not None:
+            return 1
+        if self.video2_frame_times is not None:
+            return 2
+        if self.video3_frame_times is not None:
+            return 3
+        return 0
+
+    def _step_frame(self, direction: int):
+        src = self.frame_step_source
+        ft = self._available_frame_times(src)
+        if ft is None:
+            src = self._fallback_frame_source()
+            ft = self._available_frame_times(src)
+            if ft is None:
+                return
+        idx = find_nearest_frame(ft, self.cursor_time)
+        new_idx = int(np.clip(idx + (1 if direction >= 1 else -1), 0, len(ft) - 1))
+        new_t = float(ft[new_idx])
+        self._set_cursor_time(new_t, update_slider=True)
 
     def _update_hypnogram_xrange(self):
         if self.hypnogram_plot is None:
@@ -1747,7 +1876,7 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             return
 
         dt_ms = self.playback_elapsed_timer.restart()
-        dt_sec = dt_ms / 1000.0
+        dt_sec = (dt_ms / 1000.0) * float(self.playback_speed)
 
         t_start = self.window_start
         t_end = self.window_start + self.window_len
@@ -1980,6 +2109,10 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             set_stretch(self.video3_label, self.video3_stretch)
         except Exception:
             pass
+        # Trigger layout update to reflect new stretches
+        if self.videos_widget is not None:
+            self.videos_widget.updateGeometry()
+            self.videos_widget.adjustSize()
 
     def _set_video_stretches(self, v1: int, v2: int, v3: int):
         self.video1_stretch = max(0, int(v1))
@@ -2055,6 +2188,23 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         on_change(slider.value())
         dlg.exec()
         # If canceled, nothing to do; if accepted, stretches already applied
+
+    def _set_video_visible(self, which: int, visible: bool):
+        lbl = None
+        if which == 1:
+            lbl = self.video_label
+        elif which == 2:
+            lbl = self.video2_label
+        elif which == 3:
+            lbl = self.video3_label
+        if lbl is None:
+            return
+        lbl.setVisible(bool(visible))
+        self._apply_video_stretches()
+        # Rescale frames to current label sizes
+        QtCore.QTimer.singleShot(0, self._rescale_video_frame)
+        QtCore.QTimer.singleShot(0, self._rescale_video2_frame)
+        QtCore.QTimer.singleShot(0, self._rescale_video3_frame)
 
     # ---------- Help/Status & cleanup ----------
 
