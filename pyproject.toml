@@ -16,3 +16,6 @@ dependencies = [
     "streamlit>=1.50.0",
     "tifffile>=2025.10.16",
 ]
+
+[project.scripts]
+seeqt-video-viewer = "video_viewer.app:main"
