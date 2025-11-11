@@ -142,6 +142,7 @@ class SelectableViewBox(pg.ViewBox):
     sigDragFinish = QtCore.Signal(float)
     sigWheelScrolled = QtCore.Signal(int)
     sigWheelSmoothScrolled = QtCore.Signal(int)
+    sigWheelCursorScrolled = QtCore.Signal(int)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -190,7 +191,11 @@ class SelectableViewBox(pg.ViewBox):
             mods = QtWidgets.QApplication.keyboardModifiers()
         except Exception:
             mods = QtCore.Qt.KeyboardModifier.NoModifier
-        if mods & QtCore.Qt.KeyboardModifier.ShiftModifier:
+        # Ctrl: cursor scroll within window (like dragging cursor slider)
+        if mods & QtCore.Qt.KeyboardModifier.ControlModifier:
+            self.sigWheelCursorScrolled.emit(int(dy))
+        # Shift: smooth scroll the window
+        elif mods & QtCore.Qt.KeyboardModifier.ShiftModifier:
             self.sigWheelSmoothScrolled.emit(direction)
         else:
             self.sigWheelScrolled.emit(direction)
@@ -1018,6 +1023,7 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             vb = SelectableViewBox()
             vb.sigWheelScrolled.connect(self._page)
             vb.sigWheelSmoothScrolled.connect(self._on_smooth_scroll)
+            vb.sigWheelCursorScrolled.connect(self._on_cursor_wheel)
             vb.sigWheelSmoothScrolled.connect(self._on_smooth_scroll)
 
             # *** FIX 2: Use HoverablePlotItem to track mouse location ***
@@ -1937,6 +1943,21 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         self.cursor_time = self.window_start + rel * self.window_len
         self._apply_x_range()
         self._update_nav_slider_from_window()
+
+    def _on_cursor_wheel(self, dy: int):
+        # Adjust the in-window cursor position proportionally to wheel delta
+        self._stop_playback_if_playing()
+        wl = float(self.window_len)
+        if wl <= 0:
+            return
+        # Typical mouse wheel notch is 120 units. Move ~2% of window per notch.
+        step_per_notch = 0.02
+        frac = (float(dy) / 120.0) * step_per_notch
+        dt = frac * wl
+        xr0 = self.window_start
+        xr1 = self.window_start + wl
+        new_t = clamp(self.cursor_time + dt, xr0, xr1)
+        self._set_cursor_time(new_t, update_slider=True)
 
     def _on_window_len_changed(self, v):
         self._stop_playback_if_playing()
