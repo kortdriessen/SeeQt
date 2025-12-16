@@ -797,6 +797,11 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         playback_speed_action.triggered.connect(self._adjust_playback_speed)
         mview.addAction(playback_speed_action)
 
+        # Show/Hide traces
+        trace_visibility_action = QtGui.QAction("Show/Hide Traces...", self)
+        trace_visibility_action.triggered.connect(self._show_trace_visibility_dialog)
+        mview.addAction(trace_visibility_action)
+
         mhelp = self.menuBar().addMenu("&Help")
         hh = QtGui.QAction("Shortcuts / Help", self)
         hh.triggered.connect(self._show_help)
@@ -1131,6 +1136,12 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         # Align left axes after layout settles
         QtCore.QTimer.singleShot(0, self._align_left_axes)
         QtCore.QTimer.singleShot(100, self._align_left_axes)
+        # Initialize trace visibility state if needed
+        if not hasattr(self, "trace_visible") or len(self.trace_visible) != len(
+            self.series
+        ):
+            self.trace_visible = [True] * len(self.series)
+        self._apply_trace_visibility()
 
     # ---------- Video & Static Image ----------
     def _load_video_data(self, vpath, ft_path):
@@ -2209,6 +2220,69 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         on_change(slider.value())
         dlg.exec()
         # If canceled, nothing to do; if accepted, stretches already applied
+
+    # ---------- Trace visibility ----------
+    def _apply_trace_visibility(self):
+        # Rebuild the graphics layout to include only visible traces in rows
+        try:
+            # Remove all plots from layout first
+            self.plot_area.clear()
+            master_plot = None
+            row = 0
+            for idx, plt in enumerate(self.plots):
+                vis = (
+                    True if idx >= len(self.trace_visible) else self.trace_visible[idx]
+                )
+                plt.setVisible(bool(vis))
+                if not vis:
+                    continue
+                self.plot_area.addItem(plt, row=row, col=0)
+                if master_plot is None:
+                    master_plot = plt
+                else:
+                    plt.setXLink(master_plot)
+                row += 1
+            # Re-apply x-range to keep all linked
+            self._apply_x_range()
+            QtCore.QTimer.singleShot(0, self._align_left_axes)
+        except Exception:
+            pass
+
+    def _show_trace_visibility_dialog(self):
+        if not self.series:
+            QtWidgets.QMessageBox.information(self, "Traces", "No traces loaded.")
+            return
+        if not hasattr(self, "trace_visible") or len(self.trace_visible) != len(
+            self.series
+        ):
+            self.trace_visible = [True] * len(self.series)
+
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Show / Hide Traces")
+        lay = QtWidgets.QVBoxLayout(dlg)
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        cont = QtWidgets.QWidget()
+        form = QtWidgets.QFormLayout(cont)
+        checks = []
+        for i, s in enumerate(self.series):
+            cb = QtWidgets.QCheckBox()
+            cb.setChecked(
+                True if i >= len(self.trace_visible) else bool(self.trace_visible[i])
+            )
+            checks.append(cb)
+            form.addRow(str(s.name), cb)
+        scroll.setWidget(cont)
+        lay.addWidget(scroll)
+        btns = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        lay.addWidget(btns)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        if dlg.exec() == QtWidgets.QDialog.Accepted:
+            self.trace_visible = [bool(cb.isChecked()) for cb in checks]
+            self._apply_trace_visibility()
 
     def _set_video_visible(self, which: int, visible: bool):
         lbl = None

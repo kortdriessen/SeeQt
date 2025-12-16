@@ -49,11 +49,12 @@ acq_ids = [
 acq_id = st.selectbox("Acquisition ID for ROIs", acq_ids, key="acq_id")
 loc, acq = acq_id.split("--")
 rois = st.checkbox("Include Soma ROIs", value=False)
-if rois:
-    all_rois = st.checkbox("include ROIs for all acquisitions?", value=False)
-synapses = st.checkbox("Include Synaptic Traces", value=False)
+
 eye = st.checkbox("Include Eye Traces", value=False)
+whisking = st.checkbox("Include Whisking Traces", value=False)
 glut_sums = st.checkbox("Include Glutamate Sums", value=False)
+fractional = st.checkbox("Fraction Active?", value=False)
+soma = st.text_input("Soma to Use", value="soma1")
 
 synaptic_videos = st.checkbox("Include Synaptic Videos", value=False)
 
@@ -97,55 +98,57 @@ for f in os.listdir(main_data_dir):
             traces.append(os.path.join(main_data_dir, time_file))
             trace_colors.append(load_blue)
 
+if rois:
+    roi_data_dir = f"Z:\\slap_mi\\analysis_materials\\{subject}\\{exp}\\scoring_data\\sync_block-{sb}\\scope_traces\\soma_rois\\{acq_id}"
+    for f in os.listdir(roi_data_dir):
+        if not f.endswith("_y.npy"):
+            continue
+        if soma not in f:
+            continue
+        if "dmd1" in f:
+            trace_colors.append(soma_red1)
+        elif "dmd2" in f:
+            trace_colors.append(soma_red2)
+        else:
+            trace_colors.append(soma_red1)
+
+        yname = f
+        tname = f.replace("_y.npy", "_t.npy")
+        roi_data_path = os.path.join(roi_data_dir, yname)
+        roi_time_path = os.path.join(roi_data_dir, tname)
+        traces.append(roi_data_path)
+        traces.append(roi_time_path)
+
 if glut_sums:
-    glut_sums_dir = f"Z:\\slap_mi\\analysis_materials\\{subject}\\{exp}\\scoring_data\\sync_block-{sb}\\scope_traces\\synapses\\{acq_id}\\glutamate_sums\\fracactive"
-    glut_sums_options = [f for f in os.listdir(glut_sums_dir) if f.endswith("_y.npy")]
-    glut_sums_to_load = st.multiselect("Glutamate Sums to Load", glut_sums_options)
-    for f in glut_sums_to_load:
+
+    glut_sums_dir = f"Z:\\slap_mi\\analysis_materials\\{subject}\\{exp}\\scoring_data\\sync_block-{sb}\\scope_traces\\synapses\\{acq_id}\\glutamate_sums"
+    glut_sums_data = [
+        f for f in os.listdir(glut_sums_dir) if f.endswith("_y.npy") and soma in f
+    ]
+    for f in glut_sums_data:
         yname = f
         tname = f.replace("_y.npy", "_t.npy")
         traces.append(os.path.join(glut_sums_dir, yname))
         traces.append(os.path.join(glut_sums_dir, tname))
+        trace_colors.append(glut_total_green)
+
+    glut_sums_dir = f"Z:\\slap_mi\\analysis_materials\\{subject}\\{exp}\\scoring_data\\sync_block-{sb}\\scope_traces\\synapses\\{acq_id}\\glutamate_sums\\BY_DEND\\{soma}"
+    glut_sums_data = [
+        f for f in os.listdir(glut_sums_dir) if f.endswith("_y.npy") and "fr_" not in f
+    ]
+    glut_sums_frac = [
+        f for f in os.listdir(glut_sums_dir) if f.endswith("_y.npy") and "fr_" in f
+    ]
+    for i, f in enumerate(glut_sums_data):
+        yname = f
+        tname = f.replace("_y.npy", "_t.npy")
+        if fractional:
+            yname = glut_sums_frac[i]
+            tname = yname.replace("_y.npy", "_t.npy")
+        traces.append(os.path.join(glut_sums_dir, yname))
+        traces.append(os.path.join(glut_sums_dir, tname))
         trace_colors.append(glut_sum_green)
 
-if rois:
-    if all_rois:
-        for ac in acq_ids:
-            roi_data_dir = f"Z:\\slap_mi\\analysis_materials\\{subject}\\{exp}\\scoring_data\\sync_block-{sb}\\scope_traces\\soma_rois\\{ac}"
-            for f in os.listdir(roi_data_dir):
-                if not f.endswith("_y.npy"):
-                    continue
-                if "dmd1" in f:
-                    trace_colors.append(soma_red1)
-                elif "dmd2" in f:
-                    trace_colors.append(soma_red2)
-                else:
-                    trace_colors.append(soma_red1)
-
-                yname = f
-                tname = f.replace("_y.npy", "_t.npy")
-                roi_data_path = os.path.join(roi_data_dir, yname)
-                roi_time_path = os.path.join(roi_data_dir, tname)
-                traces.append(roi_data_path)
-                traces.append(roi_time_path)
-    else:
-        roi_data_dir = f"Z:\\slap_mi\\analysis_materials\\{subject}\\{exp}\\scoring_data\\sync_block-{sb}\\scope_traces\\soma_rois\\{acq_id}"
-        for f in os.listdir(roi_data_dir):
-            if not f.endswith("_y.npy"):
-                continue
-            if "dmd1" in f:
-                trace_colors.append(soma_red1)
-            elif "dmd2" in f:
-                trace_colors.append(soma_red2)
-            else:
-                trace_colors.append(soma_red1)
-
-            yname = f
-            tname = f.replace("_y.npy", "_t.npy")
-            roi_data_path = os.path.join(roi_data_dir, yname)
-            roi_time_path = os.path.join(roi_data_dir, tname)
-            traces.append(roi_data_path)
-            traces.append(roi_time_path)
 
 # Validate inputs early
 for i in range(len(traces)):
@@ -160,30 +163,23 @@ assert (
 ), "Expected 1 frame times path, got {len(frame_times_paths)}"
 
 frame_times_path = frame_times_paths[0]
-pupil_path = f"Z:\\slap_mi\\data\\{subject}\\{exp}\\pupil\\pupil-{sb}.mp4"
-
-
-# get the synaptic data
-if synapses:
-    for dmd in [1, 2]:
-        syn_data_dir = f"Z:\\slap_mi\\analysis_materials\\{subject}\\{exp}\\scoring_data\\sync_block-{sb}\\scope_traces\\synapses\\{acq_id}\\dmd{dmd}"
-        syn_files = glob.glob(os.path.join(syn_data_dir, "*_y.npy"))
-        for syn_file in syn_files:
-            traces.append(os.path.join(syn_data_dir, syn_file))
-            time_file = syn_file.replace("_y.npy", "_t.npy")
-            traces.append(os.path.join(syn_data_dir, time_file))
-            trace_colors.append(glu_green)
+# pupil_path = f"Z:\\slap_mi\\data\\{subject}\\{exp}\\pupil\\pupil-{sb}.mp4"
+pupil_path = f"Z:\\slap_mi\\analysis_materials\\{subject}\\{exp}\\pupil_inference\\pupil-{sb}DLC_Resnet50_dlc_slap_pupilSep23shuffle0_snapshot_best-60_p60_labeled.mp4"
 
 if eye:
     eye_data_dir = f"Z:\\slap_mi\\analysis_materials\\{subject}\\{exp}\\scoring_data\\sync_block-{sb}\\eye"
     for f in os.listdir(eye_data_dir):
         if not f.endswith("_y.npy"):
             continue
+        if "lid" in f:
+            continue  # don't display lid data
+
         traces.append(os.path.join(eye_data_dir, f))
         time_file = f.replace("_y.npy", "_t.npy")
         traces.append(os.path.join(eye_data_dir, time_file))
         trace_colors.append(eye_indigo)
 
+if whisking:
     whisk_dir = f"Z:\\slap_mi\\analysis_materials\\{subject}\\{exp}\\scoring_data\\sync_block-{sb}\\whisking"
     for f in os.listdir(whisk_dir):
         if not f.endswith("_y.npy"):
