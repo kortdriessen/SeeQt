@@ -1,0 +1,231 @@
+## SleepScorer GUI — Multi‑trace + Multi‑video sleep scoring
+
+SleepScorer is a fast, Qt-based application for interactive sleep scoring and time‑series review. It combines a high‑performance windowed renderer for multiple electrophysiology traces with one to three time‑synchronized videos, a global hypnogram overview, and an efficient click‑and‑drag labeling workflow.
+
+This document explains:
+- What the application does
+- How to install and run it
+- A complete tour of features and shortcuts
+- Command‑line flags and data format
+- Technical design and implementation details
+
+---
+
+### Quick start
+Requirements:
+- Python 3.9+ recommended
+- pip packages: PySide6, pyqtgraph, opencv‑python, numpy
+
+Install:
+```bash
+pip install PySide6 pyqtgraph opencv-python numpy
+```
+
+Run (examples):
+```bash
+# Load all *_t.npy/*_y.npy pairs from a folder
+python -m sleepscoring.sleepscore_main --data_dir ./data
+
+# Load explicit pairs and one video
+python -m sleepscoring.sleepscore_main ^
+  --data_files ./data/eeg_t.npy ./data/eeg_y.npy ./data/load_t.npy ./data/load_y.npy ^
+  --video ./data/video.mp4 --frame_times ./data/frame_times.npy
+
+# Load two and three videos (with separate frame-times)
+python -m sleepscoring.sleepscore_main ^
+  --data_dir ./data ^
+  --video ./data/video.mp4 --frame_times ./data/frame_times.npy ^
+  --video2 ./data/video2.mp4 --frame_times2 ./data/frame_times2.npy
+
+python -m sleepscoring.sleepscore_main ^
+  --data_dir ./data ^
+  --video ./data/video.mp4 --frame_times ./data/frame_times.npy ^
+  --video2 ./data/video2.mp4 --frame_times2 ./data/frame_times2.npy ^
+  --video3 ./data/video3.mp4 --frame_times3 ./data/frame_times3.npy
+```
+
+---
+
+### Data format
+- Each time series is provided as a pair: `<name>_t.npy` (1‑D float seconds, monotonic) and `<name>_y.npy` (1‑D float values).
+- You can:
+  - Point the app to a directory with many pairs using `--data_dir`, or
+  - Provide an ordered list of files using `--data_files` (any mix of `_t.npy` and `_y.npy` files). Pairs are matched by basename; row order follows first appearance in your list.
+- Optional per‑series colors can be provided with `--colors`. Accepted formats: `#RRGGBB[AA]`, `0xRRGGBB`, or `R,G,B[,A]`.
+
+Videos:
+- Provide `--video/--frame_times` for the first video, `--video2/--frame_times2` for the second, and `--video3/--frame_times3` for the third.
+- Frame times are 1‑D numpy arrays of timestamps (seconds) matching the video’s frames.
+- A static image (`--image`) can be shown when only one video is present or for custom use.
+
+Labels:
+- CSV import/export uses the header `start_s,end_s,label` with rows specifying half‑open intervals `[start_s, end_s)`.
+
+---
+
+### Command‑line flags
+- `--data_dir PATH` — load all `<name>_t.npy` / `<name>_y.npy` pairs from a directory.
+- `--data_files FILE...` — explicit ordered list of `.npy` files for multiple series.
+- `--colors COLOR...` — optional colors matching series order (see format above).
+- `--video, --frame_times` — main video and frame times.
+- `--video2, --frame_times2` — second video and frame times.
+- `--video3, --frame_times3` — third video and frame times.
+- `--image` — static image (shown when a 2nd/3rd video is not used).
+- `--fixed_scale` — disable Y auto‑scaling; initial per‑trace Y limits are set from robust percentiles (1–99%) with padding.
+- `--low_profile_x` — hide X axis labels/ticks for all but the bottom trace; vertical grid lines are preserved on hidden axes.
+
+---
+
+### UI tour
+Left side:
+- Multi‑trace panel: stacked plots showing each loaded time series. Plots are X‑linked.
+- Click‑and‑drag inside any plot creates a selection region across all traces.
+- Each plot has a vertical cursor line synchronized across traces.
+
+Right side:
+- Videos panel: up to three time‑synchronized videos stacked vertically, plus a per‑window cursor slider underneath the top video.
+- An optional static image can be shown if fewer than three videos are loaded.
+- Hypnogram overview at the bottom: shows full‑recording label spans and a translucent region indicating the current window.
+
+Top:
+- Window length (seconds) spinner; global navigator slider for paging through time.
+
+Status bar:
+- Displays window start/time span and current cursor time (with label state at cursor).
+
+---
+
+### Keyboard & mouse cheatsheet
+
+Navigation and windowing
+- Mouse wheel: page left/right one full window.
+- Shift + wheel: smooth scroll window (fraction of window length; configurable).
+- Ctrl + wheel: cursor scrub within the current window (like dragging the cursor slider).
+- `[` `]` or PageUp/PageDown: page window left/right.
+- Window spinner: change window length; the app keeps the cursor anchored proportionally.
+
+Playback and frame stepping
+- Space: toggle playback (loops within current window).
+- View → Set Playback Speed…: choose 0.25× to 4× (default 1×).
+- View → Frame Step Target → Video 1/2/3: pick which video to step.
+- Left/Right arrow: step the selected video one frame back/forward (holding repeats).
+
+Selection & labeling
+- Click‑drag in any plot: create/update selection. Drag handles to extend or refine.
+- While a selection is active, press a label key:
+  - `w` Wake
+  - `q` Quiet‑Wake
+  - `b` Brief‑Arousal
+  - `2` NREM‑light
+  - `1` NREM
+  - `r` REM
+  - `t` Transition‑to‑REM
+  - `a` Artifact
+  - `u` unclear
+  - `o` ON
+  - `f` OFF
+  - `s` spindle
+- `0`: Clear any labels in the selected range (splits existing intervals as needed).
+- Backspace (Edit → Delete last label): removes the most recently ending label.
+- Labels that overlap or are directly adjacent and have the same state are merged automatically into a single epoch.
+
+Zoom & axes
+- Ctrl + 1 / Ctrl + 2: zoom Y‑axis in/out on the hovered plot.
+- View → Y‑Axis Controls… (Ctrl+D): per‑trace autorange toggle and min/max input.
+- `z`: toggle hypnogram zoom (zoom to window ± padding vs. full extent).
+- `h`: toggle hypnogram visibility (frees vertical space for videos).
+
+Video controls
+- View → Adjust Secondary Videos Size…: slider to reduce/enlarge Video 1’s share so Video 2/3 gain space (live preview).
+- View → Show Video 1/2/3 (checkable) or:
+  - Ctrl+Shift+1 / Ctrl+Shift+2 / Ctrl+Shift+3 to toggle each video.
+- Videos auto‑scale to their label sizes; resizing the splitter re‑scales the frames.
+
+Trace visibility
+- View → Show/Hide Traces…: toggle visibility of any trace.
+- Hidden traces disappear completely and the remaining traces expand to occupy the space. X‑linking remains intact.
+
+Import/Export labels
+- File → Load Labels… reads CSV with header `start_s,end_s,label`.
+- File → Export Labels… writes the same format (values formatted to 6 decimals).
+
+---
+
+### Tips and recommended workflow
+1. Set window length for your scoring resolution (e.g., 10–30 s).
+2. Page `[ ]` or Shift+wheel to find regions of interest.
+3. Click‑drag to select an epoch; press a label key. Repeat across the recording.
+4. Use `0` to clear labels for re‑scoring specific regions.
+5. Use the hypnogram to verify global dynamics; toggle `z` to zoom the overview.
+6. Adjust Y scales per trace via Ctrl+D (or use `--fixed_scale` at launch).
+7. If reviewing behavior videos, step the selected video frame‑by‑frame with Left/Right. Use the frame step target menu to choose which video to step.
+
+---
+
+### Technical design
+
+Rendering and decimation
+- Each trace is rendered in a `pyqtgraph.PlotItem` using a custom windowed decimator:
+  - `segment_for_window()` returns either raw samples (if under a threshold) or a peak‑preserving min/max per time bin (interleaved at bin centers) to preserve spikes/peaks.
+  - Rendering budget per plot is adaptive to pixel width to ensure interactivity.
+- A custom `SelectableViewBox` disables the stock pan/zoom behavior and emits:
+  - Drag start/update/finish signals (for selection)
+  - Wheel events split into three intents:
+    - Paging (no modifier)
+    - Smooth scrolling (Shift)
+    - Cursor scrubbing (Ctrl)
+- `HoverablePlotItem` augments plots with hover enter/leave to target Y‑zoom on the active plot.
+
+Labeling model
+- Labels are stored as a sorted list of dicts `{start, end, label}` (seconds).
+- Adding a label:
+  - Overlapping existing intervals are split so the new label overwrites the selected span only.
+  - After insertion, adjacent/overlapping intervals with the same label are merged.
+- Clearing (`0`) removes any overlapping parts by splitting and discarding overlaps.
+- All label regions are drawn across every trace as translucent `LinearRegionItem`s.
+- The hypnogram overview shows the same label spans collapsed to a single row with a translucent “current window” region.
+
+Videos and threading
+- Each video is handled by a `VideoWorker` in its own `QThread`, with a small LRU frame cache. Frames are requested by nearest frame index to the current cursor time.
+- The main window’s `_set_cursor_time()` requests frames from any loaded videos; scaling is applied to fit inside their `QLabel`s.
+- Frame stepping uses the selected video’s frame times to pick the nearest index and move to the previous/next index. This accommodates different frame rates across videos.
+
+Layout and sizing
+- Left plot spines (Y axes) are aligned by measuring axis widths and applying the maximum using `setWidth()`.
+- `--low_profile_x` keeps vertical grid lines for upper plots while hiding axis labels/ticks so only the bottom plot shows time tick labels.
+- The videos are grouped in a dedicated right‑panel container with its own vertical layout. Stretches are applied only to video rows so you can reallocate space between Video 1 vs Videos 2/3 without fighting other controls.
+- Traces are placed in a `GraphicsLayoutWidget`; when you hide a trace, the layout is rebuilt only with visible plots and X‑linking is re‑established.
+
+Performance notes
+- OpenGL is enabled in pyqtgraph config when available; antialiasing is off for speed.
+- The decimation budget is bounded per plot and scales with plot pixel width.
+- Long‑duration datasets (hours) remain responsive due to windowed rendering.
+
+---
+
+### Troubleshooting
+- No videos appear:
+  - Ensure `opencv-python` is installed and the paths to `--video` and `--frame_times` exist.
+  - Verify `frame_times.npy` is 1‑D and aligned with the video frames.
+- X grid lines missing (low profile mode):
+  - The app retains vertical grid lines by keeping a minimal bottom axis per row with hidden tick text. If you manually change plot styles, keep axes alive to preserve grids.
+- Labels don’t export:
+  - Ensure you have created at least one label. Export requires at least one interval.
+
+---
+
+### Extensibility
+- Add new label keys or colors by editing `keymap` and `label_colors` where the main window is constructed.
+- The labeling and rendering code paths are modular:
+  - Label management: `_add_new_label`, `_clear_labels_in_range`, `_merge_adjacent_same_labels`, `_redraw_all_labels`, `_redraw_hypnogram_labels`.
+  - Rendering pipeline: `_apply_x_range`, `_refresh_curves`, `segment_for_window`.
+  - Video plumbing: `VideoWorker`, `_on_frame_ready`/`_on_frame2_ready`/`_on_frame3_ready`.
+
+---
+
+### License and citation
+This tool is provided as part of your lab’s internal tooling. If you publish results scored with this application, please include an appropriate acknowledgment of the SleepScorer GUI.
+
+For questions or contributions, open an issue or send a patch in the repository containing `sleepscoring/sleepscore_main.py`.
+
+
