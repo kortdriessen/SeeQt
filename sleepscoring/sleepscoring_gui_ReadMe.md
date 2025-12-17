@@ -42,6 +42,14 @@ python -m sleepscoring.sleepscore_main ^
   --video ./data/video.mp4 --frame_times ./data/frame_times.npy ^
   --video2 ./data/video2.mp4 --frame_times2 ./data/frame_times2.npy ^
   --video3 ./data/video3.mp4 --frame_times3 ./data/frame_times3.npy
+
+# Load time series with matrix/raster plots (e.g., neural spike rasters)
+python -m sleepscoring.sleepscore_main ^
+  --data_dir ./data ^
+  --matrix_timestamps ./data/spikes1_timestamps.npy ./data/spikes2_timestamps.npy ^
+  --matrix_yvals ./data/spikes1_yvals.npy ./data/spikes2_yvals.npy ^
+  --alpha_vals ./data/spikes1_alphas.npy ./data/spikes2_alphas.npy ^
+  --matrix_colors "#FF5500" "#00AAFF"
 ```
 
 ---
@@ -61,6 +69,15 @@ Videos:
 Labels:
 - CSV import/export uses the header `start_s,end_s,label` with rows specifying half‑open intervals `[start_s, end_s)`.
 
+Matrix/Raster data:
+- Matrix plots display discrete events as vertical lines in a raster format (e.g., neural spike rasters).
+- Each matrix subplot requires:
+  - `matrix_timestamps`: 1‑D array of event times (seconds, same timebase as time series)
+  - `matrix_yvals`: 1‑D array of row indices (integers 0 to N-1) specifying which row each event belongs to
+  - `alpha_vals` (optional): 1‑D array of alpha values (0.0 to 1.0) for each event
+  - `matrix_colors`: hex color for each subplot (all events in a subplot share the same color)
+- Events are rendered as vertical lines centered within their row, with configurable height and thickness.
+
 ---
 
 ### Command‑line flags
@@ -73,6 +90,13 @@ Labels:
 - `--image` — static image (shown when a 2nd/3rd video is not used).
 - `--fixed_scale` — disable Y auto‑scaling; initial per‑trace Y limits are set from robust percentiles (1–99%) with padding.
 - `--low_profile_x` — hide X axis labels/ticks for all but the bottom trace; vertical grid lines are preserved on hidden axes.
+
+Matrix viewer flags:
+- `--matrix_timestamps FILE...` — list of .npy files with event timestamps for each matrix subplot.
+- `--matrix_yvals FILE...` — list of .npy files with row indices (0 to N-1) for each event.
+- `--alpha_vals FILE...` — optional list of .npy files with alpha values (0-1) for each event.
+- `--matrix_colors COLOR...` — list of hex colors (#RRGGBB) for each matrix subplot.
+- `--matrix_row_height FRAC` — optional height of each row as a fraction of available space (e.g., 0.02).
 
 ---
 
@@ -145,6 +169,11 @@ Trace visibility
 - View → Show/Hide Traces…: toggle visibility of any trace.
 - Hidden traces disappear completely and the remaining traces expand to occupy the space. X‑linking remains intact.
 
+Matrix viewer controls
+- View → Matrix Event Height…: adjust the vertical extent of event lines (0.1–0.5, distance from row center). Default is 0.4 (lines span 80% of row height).
+- View → Matrix Event Thickness…: adjust the pen width of event lines in pixels (1–10). Default is 2.
+- Matrix plots show only min/max Y tick labels and have no horizontal grid lines for a clean raster appearance.
+
 Import/Export labels
 - File → Load Labels… reads CSV with header `start_s,end_s,label`.
 - File → Export Labels… writes the same format (values formatted to 6 decimals).
@@ -195,6 +224,14 @@ Layout and sizing
 - `--low_profile_x` keeps vertical grid lines for upper plots while hiding axis labels/ticks so only the bottom plot shows time tick labels.
 - The videos are grouped in a dedicated right‑panel container with its own vertical layout. Stretches are applied only to video rows so you can reallocate space between Video 1 vs Videos 2/3 without fighting other controls.
 - Traces are placed in a `GraphicsLayoutWidget`; when you hide a trace, the layout is rebuilt only with visible plots and X‑linking is re‑established.
+
+Matrix viewer rendering
+- Matrix/raster plots display discrete events as vertical line segments.
+- Each event is drawn as a vertical line at its timestamp, spanning from `(row + 0.5 - height)` to `(row + 0.5 + height)` where height is the configurable event height.
+- For performance, events are grouped by quantized alpha levels (11 levels) and rendered as batched line segments using `PlotDataItem` with `connect='pairs'`.
+- Only events within the current time window are rendered, using binary search on sorted timestamps.
+- Downsampling is applied if too many events are visible (>10,000) to maintain responsiveness.
+- Matrix plots are X‑linked with time series plots and share the same cursor, selection, and labeling system.
 
 Performance notes
 - OpenGL is enabled in pyqtgraph config when available; antialiasing is off for speed.

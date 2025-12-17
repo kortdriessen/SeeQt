@@ -31,6 +31,18 @@ class Series:
     y: np.ndarray
 
 
+@dataclass
+class MatrixSeries:
+    """Holds data for a matrix/raster subplot."""
+
+    name: str
+    timestamps: np.ndarray  # 1D array of event times (seconds)
+    yvals: np.ndarray  # 1D array of integer row indices (0 to N_rows-1)
+    alphas: np.ndarray  # 1D array of alpha values (0.0 to 1.0)
+    color: tuple  # (R, G, B) base color for events
+    n_rows: int  # number of unique rows (max(yvals) + 1)
+
+
 # ---------------- Utilities ----------------
 
 
@@ -372,6 +384,12 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         image_path=None,
         fixed_scale=False,
         low_profile_x=False,
+        # Matrix viewer arguments
+        matrix_timestamps=None,
+        matrix_yvals=None,
+        alpha_vals=None,
+        matrix_colors=None,
+        matrix_row_height=None,
     ):
         super().__init__()
         self.setWindowTitle("Sleep Scorer — Multi-Trace + Video + Labeling")
@@ -391,6 +409,21 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         self.plot_sel_regions: list[pg.LinearRegionItem] = []
         self.plot_label_regions: list[list[pg.LinearRegionItem]] = []
         self.hovered_plot = None  # *** FIX 2: Track which plot is hovered ***
+
+        # Matrix viewer data and plots
+        self.matrix_series: list[MatrixSeries] = []
+        self.matrix_plots: list[pg.PlotItem] = []
+        self.matrix_items: list[pg.ScatterPlotItem] = []
+        self.matrix_cur_lines: list[pg.InfiniteLine] = []
+        self.matrix_sel_regions: list[pg.LinearRegionItem] = []
+        self.matrix_label_regions: list[list[pg.LinearRegionItem]] = []
+        self._matrix_line_items: list[list] = []  # line items for each matrix plot
+        # Matrix rendering settings
+        self.matrix_event_height = (
+            0.4  # distance from center in each direction (0.1-0.5)
+        )
+        self.matrix_event_thickness = 2  # pen width in pixels
+        self.matrix_row_height_frac = matrix_row_height  # fraction of space per row
 
         # Rendering budget (per plot)
         self.max_pts_per_plot = 4000
@@ -563,6 +596,12 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             self._load_video3_data(video3_path, frame_times3_path)
         elif image_path:
             self._load_static_image(image_path)
+
+        # Load matrix viewer data if provided
+        if matrix_timestamps and matrix_yvals:
+            self._load_matrix_data(
+                matrix_timestamps, matrix_yvals, alpha_vals, matrix_colors
+            )
 
     def eventFilter(self, obj, ev):
         try:
@@ -802,6 +841,16 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         trace_visibility_action.triggered.connect(self._show_trace_visibility_dialog)
         mview.addAction(trace_visibility_action)
 
+        # Matrix viewer settings
+        mview.addSeparator()
+        matrix_height_action = QtGui.QAction("Matrix Event Height...", self)
+        matrix_height_action.triggered.connect(self._adjust_matrix_event_height)
+        mview.addAction(matrix_height_action)
+
+        matrix_thickness_action = QtGui.QAction("Matrix Event Thickness...", self)
+        matrix_thickness_action.triggered.connect(self._adjust_matrix_event_thickness)
+        mview.addAction(matrix_thickness_action)
+
         mhelp = self.menuBar().addMenu("&Help")
         hh = QtGui.QAction("Shortcuts / Help", self)
         hh.triggered.connect(self._show_help)
@@ -840,6 +889,42 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             # Quantize to nearest 0.25
             q = round(float(val) / 0.25) * 0.25
             self.playback_speed = float(max(0.25, min(4.0, q)))
+
+    def _adjust_matrix_event_height(self):
+        """Adjust the height of matrix event lines (distance from center in each direction)."""
+        try:
+            val, ok = QtWidgets.QInputDialog.getDouble(
+                self,
+                "Matrix Event Height",
+                "Event height (0.1 - 0.5, distance from row center):",
+                float(self.matrix_event_height),
+                0.1,
+                0.5,
+                2,
+            )
+        except Exception:
+            val, ok = (self.matrix_event_height, False)
+        if ok:
+            self.matrix_event_height = float(max(0.1, min(0.5, val)))
+            self._refresh_matrix_plots()
+
+    def _adjust_matrix_event_thickness(self):
+        """Adjust the pen width of matrix event lines (in pixels)."""
+        try:
+            val, ok = QtWidgets.QInputDialog.getInt(
+                self,
+                "Matrix Event Thickness",
+                "Event line thickness (pixels, 1-10):",
+                int(self.matrix_event_thickness),
+                1,
+                10,
+                1,
+            )
+        except Exception:
+            val, ok = (self.matrix_event_thickness, False)
+        if ok:
+            self.matrix_event_thickness = int(max(1, min(10, val)))
+            self._refresh_matrix_plots()
 
     # ---------- Data ----------
     def _load_series_from_dir(self, folder):
@@ -1016,53 +1101,362 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         self.plot_cur_lines.clear()
         self.plot_sel_regions.clear()
         self.plot_label_regions.clear()
+        self.matrix_plots.clear()
+        self.matrix_items.clear()
+        self.matrix_cur_lines.clear()
+        self.matrix_sel_regions.clear()
+        self.matrix_label_regions.clear()
+        self._matrix_line_items.clear()
 
-        self.t_global_min, self.t_global_max = nice_time_range(
-            [s.t for s in self.series]
-        )
+        # Calculate time range from both time series and matrix data
+        t_arrays = [s.t for s in self.series]
+        for ms in self.matrix_series:
+            if len(ms.timestamps) > 0:
+                t_arrays.append(ms.timestamps)
+        self.t_global_min, self.t_global_max = nice_time_range(t_arrays)
         self.window_start = self.t_global_min
         self.cursor_time = self.window_start
 
+        # Create all plots (time series and matrix)
+        self._create_all_plots()
+
+        self._apply_x_range()
+        self._update_nav_slider_from_window()
+        self._update_status(f"Loaded {len(self.series)} series.")
+        self._update_hypnogram_extents()
+        # Align left axes after layout settles
+        QtCore.QTimer.singleShot(0, self._align_left_axes)
+        QtCore.QTimer.singleShot(100, self._align_left_axes)
+        # Initialize trace visibility state if needed
+        if not hasattr(self, "trace_visible") or len(self.trace_visible) != len(
+            self.series
+        ):
+            self.trace_visible = [True] * len(self.series)
+        self._apply_trace_visibility()
+
+    # ---------- Matrix Viewer ----------
+    def _load_matrix_data(self, timestamps_paths, yvals_paths, alpha_paths, colors):
+        """Load matrix/raster data from provided file paths."""
+
+        def _normalize_list(raw_list):
+            if not raw_list:
+                return []
+            items = [raw_list] if isinstance(raw_list, str) else list(raw_list)
+            out = []
+            for it in items:
+                s = (it or "").strip()
+                if s.startswith("[") and s.endswith("]"):
+                    s = s[1:-1]
+                parts = s.split(",") if "," in s else [s]
+                for p in parts:
+                    q = p.strip().strip('"').strip("'")
+                    if q.endswith(","):
+                        q = q[:-1].rstrip()
+                    if q:
+                        out.append(q)
+            return out
+
+        ts_paths = _normalize_list(timestamps_paths)
+        yv_paths = _normalize_list(yvals_paths)
+        al_paths = _normalize_list(alpha_paths) if alpha_paths else []
+        color_list = _normalize_list(colors) if colors else []
+
+        if len(ts_paths) != len(yv_paths):
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Matrix Data",
+                f"matrix_timestamps ({len(ts_paths)}) and matrix_yvals ({len(yv_paths)}) must have same length.",
+            )
+            return
+
+        def _parse_color(cs: str):
+            s = (cs or "").strip()
+            try:
+                if s.startswith("#"):
+                    s = s[1:]
+                    if len(s) in (6, 8):
+                        r = int(s[0:2], 16)
+                        g = int(s[2:4], 16)
+                        b = int(s[4:6], 16)
+                        return (r, g, b)
+                if s.lower().startswith("0x"):
+                    v = int(s, 16)
+                    r = (v >> 16) & 0xFF
+                    g = (v >> 8) & 0xFF
+                    b = v & 0xFF
+                    return (r, g, b)
+                if "," in s:
+                    parts = [int(x.strip()) for x in s.split(",") if x.strip()]
+                    if len(parts) >= 3:
+                        return (parts[0], parts[1], parts[2])
+            except Exception:
+                pass
+            return None
+
+        matrix_series = []
+        for i, (ts_path, yv_path) in enumerate(zip(ts_paths, yv_paths)):
+            if not os.path.exists(ts_path):
+                QtWidgets.QMessageBox.warning(
+                    self, "Matrix Data", f"Timestamps file not found: {ts_path}"
+                )
+                continue
+            if not os.path.exists(yv_path):
+                QtWidgets.QMessageBox.warning(
+                    self, "Matrix Data", f"Yvals file not found: {yv_path}"
+                )
+                continue
+
+            try:
+                timestamps = np.load(ts_path).astype(float).flatten()
+                yvals = np.load(yv_path).astype(int).flatten()
+
+                if len(timestamps) != len(yvals):
+                    raise ValueError(
+                        f"timestamps ({len(timestamps)}) and yvals ({len(yvals)}) must have same length"
+                    )
+
+                # Load alphas if provided
+                if i < len(al_paths) and al_paths[i] and os.path.exists(al_paths[i]):
+                    alphas = np.load(al_paths[i]).astype(float).flatten()
+                    if len(alphas) != len(timestamps):
+                        raise ValueError(
+                            f"alphas ({len(alphas)}) must match timestamps ({len(timestamps)})"
+                        )
+                    alphas = np.clip(alphas, 0.0, 1.0)
+                else:
+                    alphas = np.ones(len(timestamps), dtype=float)
+
+                # Parse color
+                if i < len(color_list) and color_list[i]:
+                    color = _parse_color(color_list[i]) or (255, 255, 255)
+                else:
+                    color = (255, 255, 255)
+
+                # Determine number of rows
+                n_rows = int(np.max(yvals)) + 1 if len(yvals) > 0 else 1
+
+                # Sort by timestamps for efficient windowed rendering
+                order = np.argsort(timestamps)
+                timestamps = timestamps[order]
+                yvals = yvals[order]
+                alphas = alphas[order]
+
+                name = (
+                    os.path.basename(ts_path)
+                    .replace("_timestamps", "")
+                    .replace(".npy", "")
+                )
+                matrix_series.append(
+                    MatrixSeries(
+                        name=name,
+                        timestamps=timestamps,
+                        yvals=yvals,
+                        alphas=alphas,
+                        color=color,
+                        n_rows=n_rows,
+                    )
+                )
+            except Exception as e:
+                QtWidgets.QMessageBox.warning(
+                    self, "Matrix Load Error", f"Error loading matrix {i}: {e}"
+                )
+                continue
+
+        if matrix_series:
+            self.matrix_series = matrix_series
+            self._update_status(f"Loaded {len(matrix_series)} matrix series.")
+            # Rebuild plots to include matrix series
+            if self.series:
+                self._rebuild_all_plots()
+            else:
+                # Update time range and create matrix plots if no time series
+                self._update_time_range_from_matrix()
+                self._create_matrix_only_plots()
+
+    def _update_time_range_from_matrix(self):
+        """Update global time range to include matrix timestamps."""
+        if not self.matrix_series:
+            return
+        for ms in self.matrix_series:
+            if len(ms.timestamps) > 0:
+                t_min = float(np.min(ms.timestamps))
+                t_max = float(np.max(ms.timestamps))
+                self.t_global_min = min(self.t_global_min, t_min)
+                self.t_global_max = max(self.t_global_max, t_max)
+
+    def _create_matrix_only_plots(self):
+        """Create matrix plots when there are no time series."""
+        if not self.matrix_series:
+            return
+
+        self.window_start = self.t_global_min
+        self.cursor_time = self.window_start
+
+        # Clear any existing plots
+        self.plot_area.clear()
+        self.matrix_plots.clear()
+        self.matrix_items.clear()
+        self.matrix_cur_lines.clear()
+        self.matrix_sel_regions.clear()
+        self.matrix_label_regions.clear()
+        self._matrix_line_items.clear()
+
         master_plot = None
+        total_plots = len(self.matrix_series)
+
+        for idx, ms in enumerate(self.matrix_series):
+            vb = SelectableViewBox()
+            vb.sigWheelScrolled.connect(self._page)
+            vb.sigWheelSmoothScrolled.connect(self._on_smooth_scroll)
+            vb.sigWheelCursorScrolled.connect(self._on_cursor_wheel)
+
+            plt = HoverablePlotItem(viewBox=vb)
+            plt.sigHovered.connect(self._on_plot_hovered)
+            self.plot_area.addItem(plt, row=idx, col=0)
+
+            plt.setLabel("left", ms.name)
+            is_last = idx == total_plots - 1
+            plt.setLabel("bottom", "Time", units="s" if is_last else None)
+
+            plt.showGrid(x=True, y=False, alpha=0.15)
+            plt.enableAutoRange("x", False)
+            plt.enableAutoRange("y", False)
+            plt.setYRange(-0.5, ms.n_rows - 0.5, padding=0.02)
+
+            left_axis = plt.getAxis("left")
+            left_axis.setTicks([[(0, "0"), (ms.n_rows - 1, str(ms.n_rows - 1))]])
+            try:
+                lf = QtGui.QFont()
+                lf.setPointSize(9)
+                left_axis.setStyle(tickFont=lf)
+            except Exception:
+                pass
+
+            if self.low_profile_x and not is_last:
+                try:
+                    plt.setLabel("bottom", "")
+                    bax = plt.getAxis("bottom")
+                    bax.setStyle(showValues=True, tickLength=0)
+                    bax.setTextPen(pg.mkPen(0, 0, 0, 0))
+                    bax.setHeight(12)
+                except Exception:
+                    pass
+
+            scatter = pg.ScatterPlotItem(size=1, pen=None)
+            plt.addItem(scatter)
+
+            cur_line = pg.InfiniteLine(
+                angle=90, movable=False, pen=pg.mkPen((255, 255, 255, 120))
+            )
+            plt.addItem(cur_line)
+
+            sel_region = pg.LinearRegionItem(
+                values=(0, 0), brush=pg.mkBrush(100, 200, 255, 40), movable=True
+            )
+            sel_region.setZValue(-10)
+            sel_region.hide()
+            plt.addItem(sel_region)
+            sel_region.sigRegionChanged.connect(self._on_active_region_dragged)
+
+            self.matrix_plots.append(plt)
+            self.matrix_items.append(scatter)
+            self.matrix_cur_lines.append(cur_line)
+            self.matrix_sel_regions.append(sel_region)
+            self.matrix_label_regions.append([])
+            self._matrix_line_items.append([])
+
+            if master_plot is None:
+                master_plot = plt
+            else:
+                plt.setXLink(master_plot)
+
+            vb.sigDragStart.connect(self._on_drag_start)
+            vb.sigDragUpdate.connect(self._on_drag_update)
+            vb.sigDragFinish.connect(self._on_drag_finish)
+
+        self._apply_matrix_row_heights()
+        self._apply_x_range()
+        self._update_nav_slider_from_window()
+        self._update_hypnogram_extents()
+        QtCore.QTimer.singleShot(0, self._align_left_axes)
+
+    def _rebuild_all_plots(self):
+        """Rebuild plots including both time series and matrix plots."""
+        # Store current state
+        old_window_start = self.window_start
+        old_cursor = self.cursor_time
+
+        # Clear and rebuild
+        self.plot_area.clear()
+        self.plots.clear()
+        self.curves.clear()
+        self.plot_cur_lines.clear()
+        self.plot_sel_regions.clear()
+        self.plot_label_regions.clear()
+        self.matrix_plots.clear()
+        self.matrix_items.clear()
+        self.matrix_cur_lines.clear()
+        self.matrix_sel_regions.clear()
+        self.matrix_label_regions.clear()
+        self._matrix_line_items.clear()
+
+        # Recalculate time range
+        t_arrays = [s.t for s in self.series]
+        for ms in self.matrix_series:
+            if len(ms.timestamps) > 0:
+                t_arrays.append(ms.timestamps)
+        self.t_global_min, self.t_global_max = nice_time_range(t_arrays)
+
+        # Create all plots
+        self._create_all_plots()
+
+        # Restore state
+        self.window_start = clamp(
+            old_window_start,
+            self.t_global_min,
+            max(self.t_global_min, self.t_global_max - self.window_len),
+        )
+        self.cursor_time = old_cursor
+
+        self._apply_x_range()
+        self._update_nav_slider_from_window()
+        self._redraw_all_labels()
+        QtCore.QTimer.singleShot(0, self._align_left_axes)
+
+    def _create_all_plots(self):
+        """Create time series and matrix plots in the layout."""
+        master_plot = None
+        row_idx = 0
+        total_plots = len(self.series) + len(self.matrix_series)
+
+        # Create time series plots first
         for idx, s in enumerate(self.series):
             vb = SelectableViewBox()
             vb.sigWheelScrolled.connect(self._page)
             vb.sigWheelSmoothScrolled.connect(self._on_smooth_scroll)
             vb.sigWheelCursorScrolled.connect(self._on_cursor_wheel)
-            vb.sigWheelSmoothScrolled.connect(self._on_smooth_scroll)
 
-            # *** FIX 2: Use HoverablePlotItem to track mouse location ***
             plt = HoverablePlotItem(viewBox=vb)
             plt.sigHovered.connect(self._on_plot_hovered)
-
-            # Manually add the plot to the layout instead of using addPlot
-            self.plot_area.addItem(plt, row=idx, col=0)
+            self.plot_area.addItem(plt, row=row_idx, col=0)
 
             plt.setLabel("left", s.name)
-            plt.setLabel(
-                "bottom", "Time", units="s" if idx == len(self.series) - 1 else None
-            )
-            # Always enable both grids; for low_profile_x we hide axis visuals but keep grid
+            is_last = row_idx == total_plots - 1
+            plt.setLabel("bottom", "Time", units="s" if is_last else None)
             plt.showGrid(x=True, y=True, alpha=0.15)
             plt.addLegend(offset=(10, 10))
             plt.enableAutoRange("x", False)
 
-            if self.low_profile_x and idx != len(self.series) - 1:
+            if self.low_profile_x and not is_last:
                 try:
-                    # Keep the axis and spine visible, remove text/ticks, keep grid
                     plt.setLabel("bottom", "")
                     bax = plt.getAxis("bottom")
                     bax.setStyle(showValues=True, tickLength=0)
-                    bax.setTextPen(pg.mkPen(0, 0, 0, 0))  # hide tick text
+                    bax.setTextPen(pg.mkPen(0, 0, 0, 0))
                     bax.setHeight(12)
-                    try:
-                        bax.setGrid(True, alpha=0.15)
-                    except Exception:
-                        pass
                 except Exception:
                     pass
 
-            # Make tick labels slightly smaller for consistency and tighter margin
             try:
                 lf = QtGui.QFont()
                 lf.setPointSize(9)
@@ -1070,7 +1464,6 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             except Exception:
                 pass
 
-            # Choose color: use provided series_colors or default to white
             if getattr(self, "series_colors", None) and idx < len(self.series_colors):
                 pen_color = self.series_colors[idx]
             else:
@@ -1109,18 +1502,15 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             vb.sigDragUpdate.connect(self._on_drag_update)
             vb.sigDragFinish.connect(self._on_drag_finish)
 
-            # Y-axis behavior: either auto or fixed scale from data
             if self.fixed_scale:
                 try:
                     y = np.asarray(s.y, dtype=float)
-                    # robust limits to avoid outliers
                     lo = float(np.nanpercentile(y, 1.0))
                     hi = float(np.nanpercentile(y, 99.0))
                     if not np.isfinite(lo) or not np.isfinite(hi):
                         raise ValueError("non-finite percentiles")
                     if hi <= lo:
                         hi = lo + 1.0
-                    # small pad
                     pad = 0.05 * (hi - lo)
                     plt.enableAutoRange("y", False)
                     plt.setYRange(lo - pad, hi + pad, padding=0)
@@ -1129,19 +1519,207 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             else:
                 plt.enableAutoRange("y", True)
 
-        self._apply_x_range()
-        self._update_nav_slider_from_window()
-        self._update_status(f"Loaded {len(self.series)} series.")
-        self._update_hypnogram_extents()
-        # Align left axes after layout settles
-        QtCore.QTimer.singleShot(0, self._align_left_axes)
-        QtCore.QTimer.singleShot(100, self._align_left_axes)
-        # Initialize trace visibility state if needed
-        if not hasattr(self, "trace_visible") or len(self.trace_visible) != len(
-            self.series
-        ):
-            self.trace_visible = [True] * len(self.series)
-        self._apply_trace_visibility()
+            row_idx += 1
+
+        # Create matrix plots
+        for idx, ms in enumerate(self.matrix_series):
+            vb = SelectableViewBox()
+            vb.sigWheelScrolled.connect(self._page)
+            vb.sigWheelSmoothScrolled.connect(self._on_smooth_scroll)
+            vb.sigWheelCursorScrolled.connect(self._on_cursor_wheel)
+
+            plt = HoverablePlotItem(viewBox=vb)
+            plt.sigHovered.connect(self._on_plot_hovered)
+            self.plot_area.addItem(plt, row=row_idx, col=0)
+
+            plt.setLabel("left", ms.name)
+            is_last = row_idx == total_plots - 1
+            plt.setLabel("bottom", "Time", units="s" if is_last else None)
+
+            # Matrix plots: no horizontal grid, minimal y-axis
+            plt.showGrid(x=True, y=False, alpha=0.15)
+            plt.enableAutoRange("x", False)
+            plt.enableAutoRange("y", False)
+
+            # Set Y range to show all rows
+            plt.setYRange(-0.5, ms.n_rows - 0.5, padding=0.02)
+
+            # Configure Y-axis: only show min and max tick values
+            left_axis = plt.getAxis("left")
+            left_axis.setTicks([[(0, "0"), (ms.n_rows - 1, str(ms.n_rows - 1))]])
+            try:
+                lf = QtGui.QFont()
+                lf.setPointSize(9)
+                left_axis.setStyle(tickFont=lf)
+            except Exception:
+                pass
+
+            if self.low_profile_x and not is_last:
+                try:
+                    plt.setLabel("bottom", "")
+                    bax = plt.getAxis("bottom")
+                    bax.setStyle(showValues=True, tickLength=0)
+                    bax.setTextPen(pg.mkPen(0, 0, 0, 0))
+                    bax.setHeight(12)
+                except Exception:
+                    pass
+
+            # Create scatter item for events (will be populated in _refresh_matrix)
+            scatter = pg.ScatterPlotItem(size=1, pen=None)
+            plt.addItem(scatter)
+
+            cur_line = pg.InfiniteLine(
+                angle=90, movable=False, pen=pg.mkPen((255, 255, 255, 120))
+            )
+            plt.addItem(cur_line)
+
+            sel_region = pg.LinearRegionItem(
+                values=(0, 0), brush=pg.mkBrush(100, 200, 255, 40), movable=True
+            )
+            sel_region.setZValue(-10)
+            sel_region.hide()
+            plt.addItem(sel_region)
+            sel_region.sigRegionChanged.connect(self._on_active_region_dragged)
+
+            self.matrix_plots.append(plt)
+            self.matrix_items.append(scatter)
+            self.matrix_cur_lines.append(cur_line)
+            self.matrix_sel_regions.append(sel_region)
+            self.matrix_label_regions.append([])
+            self._matrix_line_items.append(
+                []
+            )  # initialize line items list for this plot
+
+            if master_plot is None:
+                master_plot = plt
+            else:
+                plt.setXLink(master_plot)
+
+            vb.sigDragStart.connect(self._on_drag_start)
+            vb.sigDragUpdate.connect(self._on_drag_update)
+            vb.sigDragFinish.connect(self._on_drag_finish)
+
+            row_idx += 1
+
+        # Apply row heights for matrix plots if specified
+        self._apply_matrix_row_heights()
+
+    def _apply_matrix_row_heights(self):
+        """Apply row height fractions to matrix plots."""
+        if not self.matrix_series or self.matrix_row_height_frac is None:
+            return
+
+        try:
+            frac = float(self.matrix_row_height_frac)
+            if frac <= 0 or frac > 1:
+                return
+
+            # Calculate relative heights based on number of rows
+            for idx, (plt, ms) in enumerate(zip(self.matrix_plots, self.matrix_series)):
+                # Height proportional to number of rows
+                height = int(ms.n_rows * frac * 100)  # relative stretch
+                row = len(self.series) + idx
+                self.plot_area.ci.layout.setRowStretchFactor(row, max(1, height))
+        except Exception:
+            pass
+
+    def _matrix_segment_for_window(
+        self, ms: MatrixSeries, t0: float, t1: float, max_events: int = 10000
+    ):
+        """
+        Return event data for the [t0, t1] window, limited to max_events for performance.
+        Returns (timestamps, yvals, alphas) arrays for events in the window.
+        """
+        if t1 <= t0 or len(ms.timestamps) == 0:
+            return np.empty(0), np.empty(0), np.empty(0)
+
+        # Binary search for window bounds (timestamps are sorted)
+        i0 = np.searchsorted(ms.timestamps, t0, side="left")
+        i1 = np.searchsorted(ms.timestamps, t1, side="right")
+
+        if i0 >= i1:
+            return np.empty(0), np.empty(0), np.empty(0)
+
+        # Slice to window
+        ts = ms.timestamps[i0:i1]
+        ys = ms.yvals[i0:i1]
+        als = ms.alphas[i0:i1]
+
+        # Downsample if too many events (uniform sampling)
+        if len(ts) > max_events:
+            step = len(ts) // max_events
+            ts = ts[::step]
+            ys = ys[::step]
+            als = als[::step]
+
+        return ts, ys, als
+
+    def _refresh_matrix_plots(self):
+        """Update matrix scatter plots for current window."""
+        if not self.matrix_series:
+            return
+
+        t0 = self.window_start
+        t1 = self.window_start + self.window_len
+        height = self.matrix_event_height
+        thickness = self.matrix_event_thickness
+
+        for midx, (ms, plt) in enumerate(zip(self.matrix_series, self.matrix_plots)):
+            ts, ys, als = self._matrix_segment_for_window(ms, t0, t1)
+
+            # Clear previous line items for this matrix plot
+            if midx < len(self._matrix_line_items):
+                for item in self._matrix_line_items[midx]:
+                    try:
+                        plt.removeItem(item)
+                    except Exception:
+                        pass
+                self._matrix_line_items[midx].clear()
+
+            if len(ts) == 0:
+                continue
+
+            # Create vertical line segments using pairs of points
+            n = len(ts)
+
+            # Calculate Y positions for each event
+            # Center of row y is y + 0.5, line extends from (y + 0.5 - height) to (y + 0.5 + height)
+            y_centers = ys.astype(float) + 0.5
+            y_bottoms = y_centers - height
+            y_tops = y_centers + height
+
+            # Group by alpha levels (quantize to 11 levels 0-10) for efficiency
+            alpha_levels = np.round(als * 10).astype(int)
+            unique_alphas = np.unique(alpha_levels)
+
+            # Draw lines grouped by alpha level
+            for alevel in unique_alphas:
+                mask = alpha_levels == alevel
+                if not np.any(mask):
+                    continue
+
+                # Get indices of events with this alpha
+                indices = np.where(mask)[0]
+                n_seg = len(indices)
+
+                # Build coordinate arrays for these segments
+                seg_x = np.repeat(ts[indices], 2)
+                seg_y = np.empty(2 * n_seg)
+                seg_y[0::2] = y_bottoms[indices]
+                seg_y[1::2] = y_tops[indices]
+
+                # Create pen with this alpha
+                r, g, b = ms.color
+                a = int((alevel / 10.0) * 255)
+                pen = pg.mkPen(color=(r, g, b, a), width=thickness)
+
+                # Create PlotDataItem with connect='pairs'
+                line_item = pg.PlotDataItem(
+                    seg_x, seg_y, pen=pen, connect="pairs", antialias=False
+                )
+                plt.addItem(line_item)
+                if midx < len(self._matrix_line_items):
+                    self._matrix_line_items[midx].append(line_item)
 
     # ---------- Video & Static Image ----------
     def _load_video_data(self, vpath, ft_path):
@@ -1438,14 +2016,19 @@ class SleepScorerApp(QtWidgets.QMainWindow):
 
     def _on_active_region_dragged(self):
         self._stop_playback_if_playing()
-        if not self.plot_sel_regions:
-            return
-        a, b = self.plot_sel_regions[0].getRegion()
-        self._select_start, self._select_end = float(a), float(b)
+        # Get region from whichever selection region was dragged
+        if self.plot_sel_regions:
+            a, b = self.plot_sel_regions[0].getRegion()
+            self._select_start, self._select_end = float(a), float(b)
+        elif self.matrix_sel_regions:
+            a, b = self.matrix_sel_regions[0].getRegion()
+            self._select_start, self._select_end = float(a), float(b)
 
     def _show_active_selection(self, final=False):
         if self._select_start is None or self._select_end is None:
             for r in self.plot_sel_regions:
+                r.hide()
+            for r in self.matrix_sel_regions:
                 r.hide()
             return
         a = min(self._select_start, self._select_end)
@@ -1453,11 +2036,16 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         for r in self.plot_sel_regions:
             r.setRegion((a, b))
             r.show()
+        for r in self.matrix_sel_regions:
+            r.setRegion((a, b))
+            r.show()
 
     def _clear_selection(self):
         self._select_start = None
         self._select_end = None
         for r in self.plot_sel_regions:
+            r.hide()
+        for r in self.matrix_sel_regions:
             r.hide()
 
     def _add_new_label(self, start, end, label):
@@ -1565,6 +2153,12 @@ class SleepScorerApp(QtWidgets.QMainWindow):
                     item.scene().removeItem(item)
             plot_regions.clear()
 
+        for plot_regions in self.matrix_label_regions:
+            for item in plot_regions:
+                if item.scene():
+                    item.scene().removeItem(item)
+            plot_regions.clear()
+
         for label_data in self.labels:
             a, b, name = label_data["start"], label_data["end"], label_data["label"]
             color = self.label_colors.get(name, (150, 150, 150, 80))
@@ -1576,6 +2170,15 @@ class SleepScorerApp(QtWidgets.QMainWindow):
                 reg.setZValue(-20)
                 plt.addItem(reg)
                 self.plot_label_regions[i].append(reg)
+
+            # Also add labels to matrix plots
+            for i, plt in enumerate(self.matrix_plots):
+                reg = pg.LinearRegionItem(
+                    values=(a, b), brush=pg.mkBrush(*color), movable=False
+                )
+                reg.setZValue(-20)
+                plt.addItem(reg)
+                self.matrix_label_regions[i].append(reg)
 
         self._redraw_hypnogram_labels()
 
@@ -2001,6 +2604,11 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             plt.enableAutoRange("x", False)
             plt.setXRange(*xr, padding=0.0)
 
+        # Also apply to matrix plots
+        for plt in self.matrix_plots:
+            plt.enableAutoRange("x", False)
+            plt.setXRange(*xr, padding=0.0)
+
         new_cursor_time = clamp(self.cursor_time, xr[0], xr[1])
         self._set_cursor_time(new_cursor_time, update_slider=True)
 
@@ -2030,6 +2638,8 @@ class SleepScorerApp(QtWidgets.QMainWindow):
 
     def _update_cursor_lines(self):
         for ln in self.plot_cur_lines:
+            ln.setPos(self.cursor_time)
+        for ln in self.matrix_cur_lines:
             ln.setPos(self.cursor_time)
 
     def _set_cursor_time(self, t, update_slider=True):
@@ -2100,6 +2710,9 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             tx, yx = segment_for_window(s.t, s.y, t0, t1, max_pts=max_pts)
             curve.setData(tx, yx, _callSync="off")
 
+        # Also refresh matrix plots
+        self._refresh_matrix_plots()
+
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
         self._rescale_video_frame()
@@ -2109,16 +2722,17 @@ class SleepScorerApp(QtWidgets.QMainWindow):
 
     def _align_left_axes(self):
         try:
-            if not self.plots:
+            all_plots = list(self.plots) + list(self.matrix_plots)
+            if not all_plots:
                 return
             widths = []
-            for plt in self.plots:
+            for plt in all_plots:
                 ax = plt.getAxis("left")
                 widths.append(int(ax.width()))
             if not widths:
                 return
             target = max(max(widths), 55)
-            for plt in self.plots:
+            for plt in all_plots:
                 ax = plt.getAxis("left")
                 ax.setWidth(int(target))
         except Exception:
@@ -2427,6 +3041,37 @@ def main():
         action="store_true",
         help=("Hide X-axis labels and ticks for all but the bottom plot."),
     )
+    # Matrix viewer arguments
+    parser.add_argument(
+        "--matrix_timestamps",
+        nargs="+",
+        type=str,
+        help="List of paths to .npy files containing event timestamps for matrix/raster plots.",
+    )
+    parser.add_argument(
+        "--matrix_yvals",
+        nargs="+",
+        type=str,
+        help="List of paths to .npy files containing row indices (0 to N-1) for each event.",
+    )
+    parser.add_argument(
+        "--alpha_vals",
+        nargs="+",
+        type=str,
+        help="List of paths to .npy files containing alpha values (0-1) for each event.",
+    )
+    parser.add_argument(
+        "--matrix_colors",
+        nargs="+",
+        type=str,
+        help="List of hex colors (#RRGGBB) for each matrix subplot.",
+    )
+    parser.add_argument(
+        "--matrix_row_height",
+        type=float,
+        default=None,
+        help="Height of each matrix row as a fraction of available space (e.g., 0.02).",
+    )
     args = parser.parse_args()
 
     app = QtWidgets.QApplication(sys.argv)
@@ -2443,6 +3088,12 @@ def main():
         image_path=args.image,
         fixed_scale=args.fixed_scale,
         low_profile_x=args.low_profile_x,
+        # Matrix viewer arguments
+        matrix_timestamps=args.matrix_timestamps,
+        matrix_yvals=args.matrix_yvals,
+        alpha_vals=args.alpha_vals,
+        matrix_colors=args.matrix_colors,
+        matrix_row_height=args.matrix_row_height,
     )
     w.show()
     sys.exit(app.exec())
