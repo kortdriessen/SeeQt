@@ -389,7 +389,6 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         matrix_yvals=None,
         alpha_vals=None,
         matrix_colors=None,
-        matrix_row_height=None,
     ):
         super().__init__()
         self.setWindowTitle("Sleep Scorer — Multi-Trace + Video + Labeling")
@@ -423,7 +422,12 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             0.4  # distance from center in each direction (0.1-0.5)
         )
         self.matrix_event_thickness = 2  # pen width in pixels
-        self.matrix_row_height_frac = matrix_row_height  # fraction of space per row
+        self.scale_matrix_proportionally = False  # toggled via View menu
+        self.matrix_share_boost = 0  # adjustment to matrix share (each unit = 5%, no bounds)
+        self.matrix_brightness = 1.0  # brightness multiplier for alpha values (0.2 to 3.0)
+        # Custom height factors for individual plot height control (1.0 = default)
+        self.plot_height_factors: list[float] = []  # one per time series plot
+        self.matrix_height_factors: list[float] = []  # one per matrix plot
 
         # Rendering budget (per plot)
         self.max_pts_per_plot = 4000
@@ -843,6 +847,28 @@ class SleepScorerApp(QtWidgets.QMainWindow):
 
         # Matrix viewer settings
         mview.addSeparator()
+        self.action_proportional_matrix = QtGui.QAction("Proportional Matrix Plots", self)
+        self.action_proportional_matrix.setCheckable(True)
+        self.action_proportional_matrix.setChecked(self.scale_matrix_proportionally)
+        self.action_proportional_matrix.setShortcut(QtGui.QKeySequence("Ctrl+Shift+M"))
+        self.action_proportional_matrix.toggled.connect(self._toggle_proportional_matrix)
+        mview.addAction(self.action_proportional_matrix)
+
+        increase_matrix_share_action = QtGui.QAction("Increase Matrix Share", self)
+        increase_matrix_share_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+,"))
+        increase_matrix_share_action.triggered.connect(self._increase_matrix_share)
+        mview.addAction(increase_matrix_share_action)
+
+        decrease_matrix_share_action = QtGui.QAction("Decrease Matrix Share", self)
+        decrease_matrix_share_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+."))
+        decrease_matrix_share_action.triggered.connect(self._decrease_matrix_share)
+        mview.addAction(decrease_matrix_share_action)
+
+        matrix_brightness_action = QtGui.QAction("Adjust Matrix Brightness...", self)
+        matrix_brightness_action.triggered.connect(self._adjust_matrix_brightness)
+        mview.addAction(matrix_brightness_action)
+
+        mview.addSeparator()
         matrix_height_action = QtGui.QAction("Matrix Event Height...", self)
         matrix_height_action.triggered.connect(self._adjust_matrix_event_height)
         mview.addAction(matrix_height_action)
@@ -850,6 +876,12 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         matrix_thickness_action = QtGui.QAction("Matrix Event Thickness...", self)
         matrix_thickness_action.triggered.connect(self._adjust_matrix_event_thickness)
         mview.addAction(matrix_thickness_action)
+
+        mview.addSeparator()
+        plot_heights_action = QtGui.QAction("Plot Heights Control Board...", self)
+        plot_heights_action.setShortcut(QtGui.QKeySequence("Ctrl+H"))
+        plot_heights_action.triggered.connect(self._show_plot_heights_dialog)
+        mview.addAction(plot_heights_action)
 
         mhelp = self.menuBar().addMenu("&Help")
         hh = QtGui.QAction("Shortcuts / Help", self)
@@ -925,6 +957,251 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         if ok:
             self.matrix_event_thickness = int(max(1, min(10, val)))
             self._refresh_matrix_plots()
+
+    def _toggle_proportional_matrix(self, checked: bool):
+        """Toggle proportional matrix plot sizing on/off."""
+        self.scale_matrix_proportionally = checked
+        self._apply_trace_visibility()  # Rebuilds layout with new sizing
+
+    def _increase_matrix_share(self):
+        """Increase the vertical space share for matrix plots by ~5%."""
+        if not self.matrix_series:
+            return
+        self.matrix_share_boost += 1
+        self._apply_trace_visibility()
+        self._update_status(f"Matrix share boost: {self.matrix_share_boost * 5:+d}%")
+
+    def _decrease_matrix_share(self):
+        """Decrease the vertical space share for matrix plots by ~5%."""
+        if not self.matrix_series:
+            return
+        self.matrix_share_boost -= 1
+        self._apply_trace_visibility()
+        self._update_status(f"Matrix share boost: {self.matrix_share_boost * 5:+d}%")
+
+    def _adjust_matrix_brightness(self):
+        """Show a dialog to adjust matrix event brightness."""
+        if not self.matrix_series:
+            QtWidgets.QMessageBox.information(
+                self, "Matrix Brightness", "No matrix plots loaded."
+            )
+            return
+
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Adjust Matrix Brightness")
+        lay = QtWidgets.QVBoxLayout(dlg)
+
+        label = QtWidgets.QLabel(
+            "Adjust brightness multiplier for matrix events.\n"
+            "1.0 = default, <1.0 = dimmer, >1.0 = brighter"
+        )
+        lay.addWidget(label)
+
+        slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        slider.setRange(20, 300)  # 0.2 to 3.0
+        slider.setValue(int(self.matrix_brightness * 100))
+        lay.addWidget(slider)
+
+        val_label = QtWidgets.QLabel(f"{self.matrix_brightness:.2f}")
+        lay.addWidget(val_label)
+
+        def on_change(val):
+            brightness = val / 100.0
+            val_label.setText(f"{brightness:.2f}")
+            self.matrix_brightness = brightness
+            self._refresh_matrix_plots()
+
+        slider.valueChanged.connect(on_change)
+
+        btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok)
+        btns.accepted.connect(dlg.accept)
+        lay.addWidget(btns)
+
+        dlg.exec()
+
+    def _show_plot_heights_dialog(self):
+        """Show a dialog to adjust individual subplot heights."""
+        # Collect visible time series and all matrix plots
+        visible_ts_indices = []
+        if hasattr(self, "trace_visible") and len(self.trace_visible) == len(self.series):
+            visible_ts_indices = [i for i, v in enumerate(self.trace_visible) if v]
+        else:
+            visible_ts_indices = list(range(len(self.series)))
+
+        total_subplots = len(visible_ts_indices) + len(self.matrix_series)
+        if total_subplots == 0:
+            QtWidgets.QMessageBox.information(
+                self, "Plot Heights", "No plots currently visible."
+            )
+            return
+
+        # Ensure height factor lists are properly sized
+        while len(self.plot_height_factors) < len(self.series):
+            self.plot_height_factors.append(1.0)
+        while len(self.matrix_height_factors) < len(self.matrix_series):
+            self.matrix_height_factors.append(1.0)
+
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Plot Heights Control Board")
+        dlg.setMinimumWidth(400)
+        main_lay = QtWidgets.QVBoxLayout(dlg)
+
+        info_label = QtWidgets.QLabel(
+            "Adjust the relative height of each subplot.\n"
+            "Move slider right to make taller, left to make shorter."
+        )
+        main_lay.addWidget(info_label)
+
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setMinimumHeight(200)
+        container = QtWidgets.QWidget()
+        form_lay = QtWidgets.QFormLayout(container)
+        scroll.setWidget(container)
+        main_lay.addWidget(scroll, 1)
+
+        sliders = []  # List of (type, index, slider, label) tuples
+
+        # Add sliders for visible time series
+        for ts_idx in visible_ts_indices:
+            s = self.series[ts_idx]
+            row_widget = QtWidgets.QWidget()
+            row_lay = QtWidgets.QHBoxLayout(row_widget)
+            row_lay.setContentsMargins(0, 0, 0, 0)
+
+            slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+            slider.setRange(10, 500)  # 0.1x to 5.0x (wide range as requested)
+            current_factor = self.plot_height_factors[ts_idx] if ts_idx < len(self.plot_height_factors) else 1.0
+            slider.setValue(int(current_factor * 100))
+            slider.setMinimumWidth(200)
+
+            val_label = QtWidgets.QLabel(f"{current_factor:.2f}x")
+            val_label.setMinimumWidth(50)
+
+            row_lay.addWidget(slider, 1)
+            row_lay.addWidget(val_label)
+
+            form_lay.addRow(f"[TS] {s.name}", row_widget)
+            sliders.append(("ts", ts_idx, slider, val_label))
+
+        # Add sliders for matrix plots
+        for m_idx, ms in enumerate(self.matrix_series):
+            row_widget = QtWidgets.QWidget()
+            row_lay = QtWidgets.QHBoxLayout(row_widget)
+            row_lay.setContentsMargins(0, 0, 0, 0)
+
+            slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+            slider.setRange(10, 500)  # 0.1x to 5.0x
+            current_factor = self.matrix_height_factors[m_idx] if m_idx < len(self.matrix_height_factors) else 1.0
+            slider.setValue(int(current_factor * 100))
+            slider.setMinimumWidth(200)
+
+            val_label = QtWidgets.QLabel(f"{current_factor:.2f}x")
+            val_label.setMinimumWidth(50)
+
+            row_lay.addWidget(slider, 1)
+            row_lay.addWidget(val_label)
+
+            form_lay.addRow(f"[Matrix] {ms.name}", row_widget)
+            sliders.append(("matrix", m_idx, slider, val_label))
+
+        def on_slider_change(slider_type, idx, val):
+            factor = val / 100.0
+            if slider_type == "ts":
+                self.plot_height_factors[idx] = factor
+            else:
+                self.matrix_height_factors[idx] = factor
+            # Update label
+            for st, si, sl, lbl in sliders:
+                if st == slider_type and si == idx:
+                    lbl.setText(f"{factor:.2f}x")
+                    break
+            # Apply heights live
+            self._apply_custom_plot_heights()
+
+        # Connect sliders
+        for slider_type, idx, slider, label in sliders:
+            slider.valueChanged.connect(
+                lambda val, st=slider_type, i=idx: on_slider_change(st, i, val)
+            )
+
+        # Reset button
+        btn_row = QtWidgets.QHBoxLayout()
+        reset_btn = QtWidgets.QPushButton("Reset All to Default")
+
+        def reset_all():
+            for st, idx, sl, lbl in sliders:
+                sl.blockSignals(True)
+                sl.setValue(100)
+                lbl.setText("1.00x")
+                if st == "ts":
+                    self.plot_height_factors[idx] = 1.0
+                else:
+                    self.matrix_height_factors[idx] = 1.0
+                sl.blockSignals(False)
+            self._apply_custom_plot_heights()
+
+        reset_btn.clicked.connect(reset_all)
+        btn_row.addWidget(reset_btn)
+        btn_row.addStretch()
+        main_lay.addLayout(btn_row)
+
+        btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok)
+        btns.accepted.connect(dlg.accept)
+        main_lay.addWidget(btns)
+
+        dlg.exec()
+
+    def _apply_custom_plot_heights(self):
+        """Apply custom height factors to all visible plots."""
+        try:
+            # Count visible time series
+            if hasattr(self, "trace_visible") and len(self.trace_visible) == len(self.series):
+                visible_ts_indices = [i for i, v in enumerate(self.trace_visible) if v]
+            else:
+                visible_ts_indices = list(range(len(self.series)))
+
+            layout = self.plot_area.ci.layout
+
+            # Base height for calculations
+            BASE_HEIGHT = 100
+            MIN_HEIGHT = 30
+
+            # Apply to visible time series plots
+            row = 0
+            for ts_idx in visible_ts_indices:
+                factor = self.plot_height_factors[ts_idx] if ts_idx < len(self.plot_height_factors) else 1.0
+                preferred = max(MIN_HEIGHT, int(BASE_HEIGHT * factor))
+                layout.setRowPreferredHeight(row, preferred)
+                layout.setRowMinimumHeight(row, MIN_HEIGHT)
+                layout.setRowStretchFactor(row, max(1, int(factor * 10)))
+                row += 1
+
+            # Apply to matrix plots
+            # If proportional scaling is on and custom factors are all 1.0, use proportional logic
+            # Otherwise, use custom factors
+            for m_idx, ms in enumerate(self.matrix_series):
+                factor = self.matrix_height_factors[m_idx] if m_idx < len(self.matrix_height_factors) else 1.0
+                
+                if self.scale_matrix_proportionally:
+                    # Combine proportional scaling with custom factor
+                    boost_factor = 1.0 + (self.matrix_share_boost * 0.05)
+                    BASE_HEIGHT_PER_ROW = 12 * boost_factor
+                    preferred = max(MIN_HEIGHT, int(ms.n_rows * BASE_HEIGHT_PER_ROW * factor))
+                    stretch = int(max(1, ms.n_rows * boost_factor * factor))
+                else:
+                    # Just use custom factor
+                    preferred = max(MIN_HEIGHT, int(BASE_HEIGHT * factor))
+                    stretch = max(1, int(factor * 10))
+                
+                layout.setRowPreferredHeight(row, preferred)
+                layout.setRowMinimumHeight(row, MIN_HEIGHT)
+                layout.setRowStretchFactor(row, stretch)
+                row += 1
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
 
     # ---------- Data ----------
     def _load_series_from_dir(self, folder):
@@ -1107,6 +1384,9 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         self.matrix_sel_regions.clear()
         self.matrix_label_regions.clear()
         self._matrix_line_items.clear()
+        
+        # Initialize height factors for time series plots
+        self.plot_height_factors = [1.0] * len(series_list)
 
         # Calculate time range from both time series and matrix data
         t_arrays = [s.t for s in self.series]
@@ -1264,6 +1544,8 @@ class SleepScorerApp(QtWidgets.QMainWindow):
 
         if matrix_series:
             self.matrix_series = matrix_series
+            # Initialize height factors for matrix plots
+            self.matrix_height_factors = [1.0] * len(matrix_series)
             self._update_status(f"Loaded {len(matrix_series)} matrix series.")
             # Rebuild plots to include matrix series
             if self.series:
@@ -1374,7 +1656,7 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             vb.sigDragUpdate.connect(self._on_drag_update)
             vb.sigDragFinish.connect(self._on_drag_finish)
 
-        self._apply_matrix_row_heights()
+        self._apply_custom_plot_heights()
         self._apply_x_range()
         self._update_nav_slider_from_window()
         self._update_hypnogram_extents()
@@ -1601,27 +1883,60 @@ class SleepScorerApp(QtWidgets.QMainWindow):
 
             row_idx += 1
 
-        # Apply row heights for matrix plots if specified
-        self._apply_matrix_row_heights()
+        # Apply custom plot heights (includes matrix row heights logic)
+        self._apply_custom_plot_heights()
 
     def _apply_matrix_row_heights(self):
-        """Apply row height fractions to matrix plots."""
-        if not self.matrix_series or self.matrix_row_height_frac is None:
+        """Apply proportional row heights to matrix plots if enabled.
+
+        When scale_matrix_proportionally is True, matrix plots scale based on
+        their number of rows (e.g., a plot with 20 rows is twice as tall as
+        one with 10 rows).
+
+        The matrix_share_boost adjusts the relative size of matrix vs time series
+        plots: each unit represents ~5% more/less space for matrix plots.
+        """
+        if not self.matrix_series or not self.scale_matrix_proportionally:
             return
 
         try:
-            frac = float(self.matrix_row_height_frac)
-            if frac <= 0 or frac > 1:
+            # Count visible time series to determine where matrix plots start
+            if hasattr(self, "trace_visible") and len(self.trace_visible) == len(
+                self.series
+            ):
+                visible_series_count = sum(1 for v in self.trace_visible if v)
+            else:
+                visible_series_count = len(self.series)
+
+            layout = self.plot_area.ci.layout
+
+            # Calculate total rows across all matrix plots for proportional sizing
+            total_matrix_rows = sum(ms.n_rows for ms in self.matrix_series)
+            if total_matrix_rows <= 0:
                 return
 
-            # Calculate relative heights based on number of rows
+            # Base height per row (pixels) - adjusted by matrix_share_boost
+            # Each boost unit adds/removes 5% to the base height (no bounds)
+            # boost=0 -> factor=1.0, boost=+10 -> factor=1.5, boost=-10 -> factor=0.5
+            boost_factor = 1.0 + (self.matrix_share_boost * 0.05)
+            BASE_HEIGHT_PER_ROW = 12 * boost_factor
+            MIN_HEIGHT = 30  # Minimum height to ensure small matrices are still visible
+
+            # Set preferred heights for matrix plots proportional to n_rows
+            # This is the key: setRowPreferredHeight actually affects sizing,
+            # while setRowStretchFactor alone does not work well with pyqtgraph
             for idx, (plt, ms) in enumerate(zip(self.matrix_plots, self.matrix_series)):
-                # Height proportional to number of rows
-                height = int(ms.n_rows * frac * 100)  # relative stretch
-                row = len(self.series) + idx
-                self.plot_area.ci.layout.setRowStretchFactor(row, max(1, height))
-        except Exception:
-            pass
+                row = visible_series_count + idx
+                preferred_height = max(MIN_HEIGHT, ms.n_rows * BASE_HEIGHT_PER_ROW)
+                layout.setRowPreferredHeight(row, preferred_height)
+                layout.setRowMinimumHeight(row, MIN_HEIGHT)
+                # Also set stretch factor (helps with extra space distribution)
+                stretch = int(max(1, ms.n_rows * boost_factor))
+                layout.setRowStretchFactor(row, stretch)
+        except Exception as e:
+            import traceback
+
+            traceback.print_exc()
 
     def _matrix_segment_for_window(
         self, ms: MatrixSeries, t0: float, t1: float, max_events: int = 10000
@@ -1688,8 +2003,12 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             y_bottoms = y_centers - height
             y_tops = y_centers + height
 
+            # Apply brightness multiplier to alphas (clamped to 0-1)
+            brightness = getattr(self, "matrix_brightness", 1.0)
+            adjusted_als = np.clip(als * brightness, 0.0, 1.0)
+
             # Group by alpha levels (quantize to 11 levels 0-10) for efficiency
-            alpha_levels = np.round(als * 10).astype(int)
+            alpha_levels = np.round(adjusted_als * 10).astype(int)
             unique_alphas = np.unique(alpha_levels)
 
             # Draw lines grouped by alpha level
@@ -2843,6 +3162,7 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             self.plot_area.clear()
             master_plot = None
             row = 0
+            # Add visible time series plots
             for idx, plt in enumerate(self.plots):
                 vis = (
                     True if idx >= len(self.trace_visible) else self.trace_visible[idx]
@@ -2856,6 +3176,16 @@ class SleepScorerApp(QtWidgets.QMainWindow):
                 else:
                     plt.setXLink(master_plot)
                 row += 1
+            # Add matrix plots (always visible for now)
+            for plt in self.matrix_plots:
+                self.plot_area.addItem(plt, row=row, col=0)
+                if master_plot is None:
+                    master_plot = plt
+                else:
+                    plt.setXLink(master_plot)
+                row += 1
+            # Apply custom plot heights (includes matrix row heights logic)
+            self._apply_custom_plot_heights()
             # Re-apply x-range to keep all linked
             self._apply_x_range()
             QtCore.QTimer.singleShot(0, self._align_left_axes)
@@ -3066,12 +3396,6 @@ def main():
         type=str,
         help="List of hex colors (#RRGGBB) for each matrix subplot.",
     )
-    parser.add_argument(
-        "--matrix_row_height",
-        type=float,
-        default=None,
-        help="Height of each matrix row as a fraction of available space (e.g., 0.02).",
-    )
     args = parser.parse_args()
 
     app = QtWidgets.QApplication(sys.argv)
@@ -3093,7 +3417,6 @@ def main():
         matrix_yvals=args.matrix_yvals,
         alpha_vals=args.alpha_vals,
         matrix_colors=args.matrix_colors,
-        matrix_row_height=args.matrix_row_height,
     )
     w.show()
     sys.exit(app.exec())

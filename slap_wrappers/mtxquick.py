@@ -38,8 +38,6 @@ matrix_yvals = [".\\test_mat\\ev_sources_0.npy", ".\\test_mat\\ev_sources_1.npy"
 matrix_alphas = [".\\test_mat\\ev_alphas_0.npy", ".\\test_mat\\ev_alphas_1.npy"]
 matrix_colors = ["#4287f5", "#f54254"]
 
-mtx_heights = ["0.0005", "0.0005"]
-
 low_profile_x_arg = "--low_profile_x"
 cmd = [
     sys.executable,
@@ -63,8 +61,6 @@ cmd = [
     *matrix_alphas,
     "--matrix_colors",
     *matrix_colors,
-    "--matrix_row_height",
-    "0.0001",
 ]
 
 subprocess.run(cmd, check=True)

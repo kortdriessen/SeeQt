@@ -96,7 +96,6 @@ Matrix viewer flags:
 - `--matrix_yvals FILE...` — list of .npy files with row indices (0 to N-1) for each event.
 - `--alpha_vals FILE...` — optional list of .npy files with alpha values (0-1) for each event.
 - `--matrix_colors COLOR...` — list of hex colors (#RRGGBB) for each matrix subplot.
-- `--matrix_row_height FRAC` — optional height of each row as a fraction of available space (e.g., 0.02).
 
 ---
 
@@ -170,9 +169,16 @@ Trace visibility
 - Hidden traces disappear completely and the remaining traces expand to occupy the space. X‑linking remains intact.
 
 Matrix viewer controls
+- View → Proportional Matrix Plots (Ctrl+Shift+M): toggle proportional sizing of matrix plots based on their row count. When enabled, a plot with 20 rows will be twice as tall as one with 10 rows.
+- View → Increase Matrix Share (Ctrl+Shift+,): increase the vertical space allocated to matrix plots by ~5%. No upper bound—you can keep increasing as needed.
+- View → Decrease Matrix Share (Ctrl+Shift+.): decrease the vertical space allocated to matrix plots by ~5%. No lower bound—you can keep decreasing as needed.
+- View → Adjust Matrix Brightness…: slider to adjust the brightness/visibility of matrix event lines (0.2–3.0). Default is 1.0; higher values make events more visible.
 - View → Matrix Event Height…: adjust the vertical extent of event lines (0.1–0.5, distance from row center). Default is 0.4 (lines span 80% of row height).
 - View → Matrix Event Thickness…: adjust the pen width of event lines in pixels (1–10). Default is 2.
 - Matrix plots show only min/max Y tick labels and have no horizontal grid lines for a clean raster appearance.
+
+Plot height customization
+- View → Plot Heights Control Board… (Ctrl+H): opens a dialog with sliders for every visible subplot (time series and matrix). Adjust individual plot heights from 0.1× to 5.0× the default. When one plot is made taller, the others proportionally shrink. Use "Reset All to Default" to restore all heights to 1.0×.
 
 Import/Export labels
 - File → Load Labels… reads CSV with header `start_s,end_s,label`.
@@ -224,14 +230,18 @@ Layout and sizing
 - `--low_profile_x` keeps vertical grid lines for upper plots while hiding axis labels/ticks so only the bottom plot shows time tick labels.
 - The videos are grouped in a dedicated right‑panel container with its own vertical layout. Stretches are applied only to video rows so you can reallocate space between Video 1 vs Videos 2/3 without fighting other controls.
 - Traces are placed in a `GraphicsLayoutWidget`; when you hide a trace, the layout is rebuilt only with visible plots and X‑linking is re‑established.
+- Individual plot heights can be customized via the Plot Heights Control Board (Ctrl+H). Each plot has a height factor (default 1.0×) that scales from 0.1× to 5.0×. Heights are applied using `setRowPreferredHeight` and `setRowStretchFactor` to achieve proportional sizing.
 
 Matrix viewer rendering
 - Matrix/raster plots display discrete events as vertical line segments.
 - Each event is drawn as a vertical line at its timestamp, spanning from `(row + 0.5 - height)` to `(row + 0.5 + height)` where height is the configurable event height.
+- Alpha values from the data are multiplied by a brightness factor (default 1.0, adjustable 0.2–3.0) before rendering.
 - For performance, events are grouped by quantized alpha levels (11 levels) and rendered as batched line segments using `PlotDataItem` with `connect='pairs'`.
 - Only events within the current time window are rendered, using binary search on sorted timestamps.
 - Downsampling is applied if too many events are visible (>10,000) to maintain responsiveness.
 - Matrix plots are X‑linked with time series plots and share the same cursor, selection, and labeling system.
+- Proportional sizing mode adjusts row heights based on matrix row counts; the matrix share boost adjusts the relative space between time series and matrix plots (no bounds, allowing extreme customization).
+- Individual plot heights can be further customized via the Plot Heights Control Board, which interacts with matrix proportional sizing when enabled.
 
 Performance notes
 - OpenGL is enabled in pyqtgraph config when available; antialiasing is off for speed.

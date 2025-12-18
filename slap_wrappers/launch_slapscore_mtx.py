@@ -101,7 +101,7 @@ for f in os.listdir(main_data_dir):
             trace_colors.append(load_blue)
 
 if glut_sums:
-    glut_sums_dir = f"Z:\\slap_mi\\analysis_materials\\{subject}\\{exp}\\scoring_data\\sync_block-{sb}\\scope_traces\\synapses\\{acq_id}\\glutamate_sums\\fracactive"
+    glut_sums_dir = f"Z:\\slap_mi\\analysis_materials\\{subject}\\{exp}\\scoring_data\\sync_block-{sb}\\scope_traces\\synapses\\{acq_id}\\glutamate_sums"
     glut_sums_options = [f for f in os.listdir(glut_sums_dir) if f.endswith("_y.npy")]
     glut_sums_to_load = st.multiselect("Glutamate Sums to Load", glut_sums_options)
     for f in glut_sums_to_load:
@@ -114,7 +114,7 @@ if glut_sums:
 if rois:
     if all_rois:
         for ac in acq_ids:
-            roi_data_dir = f"Z:\\slap_mi\\analysis_materials\\{subject}\\{exp}\\scoring_data\\sync_block-{sb}\\scope_traces\\soma_rois\\{ac}"
+            roi_data_dir = f"Z:\\slap_mi\\analysis_materials\\{subject}\\{exp}\\scoring_data\\sync_block-{sb}\\scope_traces\\soma_rois\\{ac}\\dff"
             for f in os.listdir(roi_data_dir):
                 if not f.endswith("_y.npy"):
                     continue
@@ -307,8 +307,6 @@ if st.button("Launch GUI"):
                 *matrix_alphas,
                 "--matrix_colors",
                 *matrix_colors,
-                "--matrix_row_height",
-                "0.0001",
             ]
         )
     subprocess.run(cmd, check=True)
