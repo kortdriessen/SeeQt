@@ -423,11 +423,20 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         )
         self.matrix_event_thickness = 2  # pen width in pixels
         self.scale_matrix_proportionally = False  # toggled via View menu
-        self.matrix_share_boost = 0  # adjustment to matrix share (each unit = 5%, no bounds)
-        self.matrix_brightness = 1.0  # brightness multiplier for alpha values (0.2 to 3.0)
+        self.matrix_share_boost = (
+            0  # adjustment to matrix share (each unit = 5%, no bounds)
+        )
+        self.matrix_brightness = (
+            1.0  # brightness multiplier for alpha values (0.2 to 3.0)
+        )
         # Custom height factors for individual plot height control (1.0 = default)
         self.plot_height_factors: list[float] = []  # one per time series plot
         self.matrix_height_factors: list[float] = []  # one per matrix plot
+        # Visibility flags for matrix plots (similar to trace_visible for time series)
+        self.matrix_visible: list[bool] = []
+        # Plot order: list of (type, index) tuples, e.g., [("ts", 0), ("ts", 1), ("matrix", 0)]
+        # None means use default order (all ts first, then all matrix)
+        self.subplot_order: list[tuple] | None = None
 
         # Rendering budget (per plot)
         self.max_pts_per_plot = 4000
@@ -840,18 +849,17 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         playback_speed_action.triggered.connect(self._adjust_playback_speed)
         mview.addAction(playback_speed_action)
 
-        # Show/Hide traces
-        trace_visibility_action = QtGui.QAction("Show/Hide Traces...", self)
-        trace_visibility_action.triggered.connect(self._show_trace_visibility_dialog)
-        mview.addAction(trace_visibility_action)
-
         # Matrix viewer settings
         mview.addSeparator()
-        self.action_proportional_matrix = QtGui.QAction("Proportional Matrix Plots", self)
+        self.action_proportional_matrix = QtGui.QAction(
+            "Proportional Matrix Plots", self
+        )
         self.action_proportional_matrix.setCheckable(True)
         self.action_proportional_matrix.setChecked(self.scale_matrix_proportionally)
         self.action_proportional_matrix.setShortcut(QtGui.QKeySequence("Ctrl+Shift+M"))
-        self.action_proportional_matrix.toggled.connect(self._toggle_proportional_matrix)
+        self.action_proportional_matrix.toggled.connect(
+            self._toggle_proportional_matrix
+        )
         mview.addAction(self.action_proportional_matrix)
 
         increase_matrix_share_action = QtGui.QAction("Increase Matrix Share", self)
@@ -878,10 +886,10 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         mview.addAction(matrix_thickness_action)
 
         mview.addSeparator()
-        plot_heights_action = QtGui.QAction("Plot Heights Control Board...", self)
-        plot_heights_action.setShortcut(QtGui.QKeySequence("Ctrl+H"))
-        plot_heights_action.triggered.connect(self._show_plot_heights_dialog)
-        mview.addAction(plot_heights_action)
+        subplot_control_action = QtGui.QAction("Subplot Control Board...", self)
+        subplot_control_action.setShortcut(QtGui.QKeySequence("Ctrl+H"))
+        subplot_control_action.triggered.connect(self._show_subplot_control_dialog)
+        mview.addAction(subplot_control_action)
 
         mhelp = self.menuBar().addMenu("&Help")
         hh = QtGui.QAction("Shortcuts / Help", self)
@@ -1019,130 +1027,226 @@ class SleepScorerApp(QtWidgets.QMainWindow):
 
         dlg.exec()
 
-    def _show_plot_heights_dialog(self):
-        """Show a dialog to adjust individual subplot heights."""
-        # Collect visible time series and all matrix plots
-        visible_ts_indices = []
-        if hasattr(self, "trace_visible") and len(self.trace_visible) == len(self.series):
-            visible_ts_indices = [i for i, v in enumerate(self.trace_visible) if v]
-        else:
-            visible_ts_indices = list(range(len(self.series)))
-
-        total_subplots = len(visible_ts_indices) + len(self.matrix_series)
+    def _show_subplot_control_dialog(self):
+        """Show a comprehensive dialog to control subplot heights, visibility, and order."""
+        total_subplots = len(self.series) + len(self.matrix_series)
         if total_subplots == 0:
             QtWidgets.QMessageBox.information(
-                self, "Plot Heights", "No plots currently visible."
+                self, "Subplot Control", "No subplots loaded."
             )
             return
 
-        # Ensure height factor lists are properly sized
+        # Ensure all control lists are properly sized
         while len(self.plot_height_factors) < len(self.series):
             self.plot_height_factors.append(1.0)
         while len(self.matrix_height_factors) < len(self.matrix_series):
             self.matrix_height_factors.append(1.0)
+        if not hasattr(self, "trace_visible") or len(self.trace_visible) != len(
+            self.series
+        ):
+            self.trace_visible = [True] * len(self.series)
+        while len(self.matrix_visible) < len(self.matrix_series):
+            self.matrix_visible.append(True)
+
+        # Initialize subplot order if not set
+        if self.subplot_order is None:
+            self.subplot_order = []
+            for i in range(len(self.series)):
+                self.subplot_order.append(("ts", i))
+            for i in range(len(self.matrix_series)):
+                self.subplot_order.append(("matrix", i))
 
         dlg = QtWidgets.QDialog(self)
-        dlg.setWindowTitle("Plot Heights Control Board")
-        dlg.setMinimumWidth(400)
+        dlg.setWindowTitle("Subplot Control Board")
+        dlg.setMinimumWidth(550)
+        dlg.setMinimumHeight(400)
         main_lay = QtWidgets.QVBoxLayout(dlg)
 
         info_label = QtWidgets.QLabel(
-            "Adjust the relative height of each subplot.\n"
-            "Move slider right to make taller, left to make shorter."
+            "Control subplot heights, visibility, and order.\n"
+            "Drag rows to reorder. Check 'Hide' to hide a subplot."
         )
         main_lay.addWidget(info_label)
 
-        scroll = QtWidgets.QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setMinimumHeight(200)
-        container = QtWidgets.QWidget()
-        form_lay = QtWidgets.QFormLayout(container)
-        scroll.setWidget(container)
-        main_lay.addWidget(scroll, 1)
+        # Create a list widget that supports drag-and-drop reordering
+        list_widget = QtWidgets.QListWidget()
+        list_widget.setDragDropMode(
+            QtWidgets.QAbstractItemView.DragDropMode.InternalMove
+        )
+        list_widget.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
+        list_widget.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
+        )
+        list_widget.setMinimumHeight(250)
+        main_lay.addWidget(list_widget, 1)
 
-        sliders = []  # List of (type, index, slider, label) tuples
+        # Store references to widgets for each row
+        row_widgets = []  # List of dicts with plot info and widget references
 
-        # Add sliders for visible time series
-        for ts_idx in visible_ts_indices:
-            s = self.series[ts_idx]
-            row_widget = QtWidgets.QWidget()
-            row_lay = QtWidgets.QHBoxLayout(row_widget)
-            row_lay.setContentsMargins(0, 0, 0, 0)
-
-            slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
-            slider.setRange(10, 500)  # 0.1x to 5.0x (wide range as requested)
-            current_factor = self.plot_height_factors[ts_idx] if ts_idx < len(self.plot_height_factors) else 1.0
-            slider.setValue(int(current_factor * 100))
-            slider.setMinimumWidth(200)
-
-            val_label = QtWidgets.QLabel(f"{current_factor:.2f}x")
-            val_label.setMinimumWidth(50)
-
-            row_lay.addWidget(slider, 1)
-            row_lay.addWidget(val_label)
-
-            form_lay.addRow(f"[TS] {s.name}", row_widget)
-            sliders.append(("ts", ts_idx, slider, val_label))
-
-        # Add sliders for matrix plots
-        for m_idx, ms in enumerate(self.matrix_series):
-            row_widget = QtWidgets.QWidget()
-            row_lay = QtWidgets.QHBoxLayout(row_widget)
-            row_lay.setContentsMargins(0, 0, 0, 0)
-
-            slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
-            slider.setRange(10, 500)  # 0.1x to 5.0x
-            current_factor = self.matrix_height_factors[m_idx] if m_idx < len(self.matrix_height_factors) else 1.0
-            slider.setValue(int(current_factor * 100))
-            slider.setMinimumWidth(200)
-
-            val_label = QtWidgets.QLabel(f"{current_factor:.2f}x")
-            val_label.setMinimumWidth(50)
-
-            row_lay.addWidget(slider, 1)
-            row_lay.addWidget(val_label)
-
-            form_lay.addRow(f"[Matrix] {ms.name}", row_widget)
-            sliders.append(("matrix", m_idx, slider, val_label))
-
-        def on_slider_change(slider_type, idx, val):
-            factor = val / 100.0
-            if slider_type == "ts":
-                self.plot_height_factors[idx] = factor
+        def create_row_widget(plot_type, idx):
+            """Create a widget for a single row in the list."""
+            if plot_type == "ts":
+                name = self.series[idx].name
+                factor = self.plot_height_factors[idx]
+                visible = self.trace_visible[idx]
+                display_name = f"[TS] {name}"
             else:
-                self.matrix_height_factors[idx] = factor
-            # Update label
-            for st, si, sl, lbl in sliders:
-                if st == slider_type and si == idx:
-                    lbl.setText(f"{factor:.2f}x")
-                    break
-            # Apply heights live
-            self._apply_custom_plot_heights()
+                name = self.matrix_series[idx].name
+                factor = self.matrix_height_factors[idx]
+                visible = self.matrix_visible[idx]
+                display_name = f"[Matrix] {name}"
 
-        # Connect sliders
-        for slider_type, idx, slider, label in sliders:
-            slider.valueChanged.connect(
-                lambda val, st=slider_type, i=idx: on_slider_change(st, i, val)
-            )
+            widget = QtWidgets.QWidget()
+            layout = QtWidgets.QHBoxLayout(widget)
+            layout.setContentsMargins(4, 2, 4, 2)
 
-        # Reset button
-        btn_row = QtWidgets.QHBoxLayout()
-        reset_btn = QtWidgets.QPushButton("Reset All to Default")
+            # Drag handle indicator
+            drag_label = QtWidgets.QLabel("≡")
+            drag_label.setStyleSheet("color: gray; font-size: 14px;")
+            drag_label.setFixedWidth(20)
+            layout.addWidget(drag_label)
 
-        def reset_all():
-            for st, idx, sl, lbl in sliders:
-                sl.blockSignals(True)
-                sl.setValue(100)
-                lbl.setText("1.00x")
-                if st == "ts":
-                    self.plot_height_factors[idx] = 1.0
+            # Name label
+            name_label = QtWidgets.QLabel(display_name)
+            name_label.setMinimumWidth(120)
+            name_label.setMaximumWidth(180)
+            layout.addWidget(name_label)
+
+            # Height slider
+            slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+            slider.setRange(1, 2000)  # 0.01x to 20.0x (very wide range)
+            slider.setValue(int(factor * 100))
+            slider.setMinimumWidth(150)
+            layout.addWidget(slider)
+
+            # Value label
+            val_label = QtWidgets.QLabel(f"{factor:.2f}x")
+            val_label.setMinimumWidth(50)
+            layout.addWidget(val_label)
+
+            # Hide checkbox
+            hide_check = QtWidgets.QCheckBox("Hide")
+            hide_check.setChecked(not visible)
+            layout.addWidget(hide_check)
+
+            # Connect slider
+            def on_slider_change(val):
+                new_factor = val / 100.0
+                if plot_type == "ts":
+                    self.plot_height_factors[idx] = new_factor
                 else:
-                    self.matrix_height_factors[idx] = 1.0
-                sl.blockSignals(False)
-            self._apply_custom_plot_heights()
+                    self.matrix_height_factors[idx] = new_factor
+                val_label.setText(f"{new_factor:.2f}x")
+                self._apply_trace_visibility()
 
-        reset_btn.clicked.connect(reset_all)
-        btn_row.addWidget(reset_btn)
+            slider.valueChanged.connect(on_slider_change)
+
+            # Connect hide checkbox
+            def on_hide_changed(state):
+                is_visible = state != QtCore.Qt.CheckState.Checked.value
+                if plot_type == "ts":
+                    self.trace_visible[idx] = is_visible
+                else:
+                    self.matrix_visible[idx] = is_visible
+                self._apply_trace_visibility()
+
+            hide_check.stateChanged.connect(on_hide_changed)
+
+            return {
+                "widget": widget,
+                "type": plot_type,
+                "idx": idx,
+                "slider": slider,
+                "val_label": val_label,
+                "hide_check": hide_check,
+            }
+
+        # Populate the list widget based on current order
+        for plot_type, idx in self.subplot_order:
+            # Validate the entry
+            if plot_type == "ts" and idx < len(self.series):
+                row_data = create_row_widget(plot_type, idx)
+                row_widgets.append(row_data)
+                item = QtWidgets.QListWidgetItem()
+                item.setSizeHint(row_data["widget"].sizeHint())
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, (plot_type, idx))
+                list_widget.addItem(item)
+                list_widget.setItemWidget(item, row_data["widget"])
+            elif plot_type == "matrix" and idx < len(self.matrix_series):
+                row_data = create_row_widget(plot_type, idx)
+                row_widgets.append(row_data)
+                item = QtWidgets.QListWidgetItem()
+                item.setSizeHint(row_data["widget"].sizeHint())
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, (plot_type, idx))
+                list_widget.addItem(item)
+                list_widget.setItemWidget(item, row_data["widget"])
+
+        def update_order_from_list():
+            """Update subplot_order based on current list widget order."""
+            new_order = []
+            for i in range(list_widget.count()):
+                item = list_widget.item(i)
+                data = item.data(QtCore.Qt.ItemDataRole.UserRole)
+                if data:
+                    new_order.append(data)
+            self.subplot_order = new_order
+            self._apply_trace_visibility()
+
+        # Connect model changes to update order
+        list_widget.model().rowsMoved.connect(lambda: update_order_from_list())
+
+        # Button row
+        btn_row = QtWidgets.QHBoxLayout()
+
+        reset_heights_btn = QtWidgets.QPushButton("Reset Heights")
+
+        def reset_heights():
+            for rw in row_widgets:
+                rw["slider"].blockSignals(True)
+                rw["slider"].setValue(100)
+                rw["val_label"].setText("1.00x")
+                if rw["type"] == "ts":
+                    self.plot_height_factors[rw["idx"]] = 1.0
+                else:
+                    self.matrix_height_factors[rw["idx"]] = 1.0
+                rw["slider"].blockSignals(False)
+            self._apply_trace_visibility()
+
+        reset_heights_btn.clicked.connect(reset_heights)
+        btn_row.addWidget(reset_heights_btn)
+
+        show_all_btn = QtWidgets.QPushButton("Show All")
+
+        def show_all():
+            for rw in row_widgets:
+                rw["hide_check"].blockSignals(True)
+                rw["hide_check"].setChecked(False)
+                if rw["type"] == "ts":
+                    self.trace_visible[rw["idx"]] = True
+                else:
+                    self.matrix_visible[rw["idx"]] = True
+                rw["hide_check"].blockSignals(False)
+            self._apply_trace_visibility()
+
+        show_all_btn.clicked.connect(show_all)
+        btn_row.addWidget(show_all_btn)
+
+        reset_order_btn = QtWidgets.QPushButton("Reset Order")
+
+        def reset_order():
+            # Rebuild the default order
+            self.subplot_order = []
+            for i in range(len(self.series)):
+                self.subplot_order.append(("ts", i))
+            for i in range(len(self.matrix_series)):
+                self.subplot_order.append(("matrix", i))
+            # Close and reopen dialog to refresh
+            dlg.accept()
+            QtCore.QTimer.singleShot(50, self._show_subplot_control_dialog)
+
+        reset_order_btn.clicked.connect(reset_order)
+        btn_row.addWidget(reset_order_btn)
+
         btn_row.addStretch()
         main_lay.addLayout(btn_row)
 
@@ -1153,47 +1257,67 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         dlg.exec()
 
     def _apply_custom_plot_heights(self):
-        """Apply custom height factors to all visible plots."""
+        """Apply custom height factors to all visible plots based on subplot_order."""
         try:
-            # Count visible time series
-            if hasattr(self, "trace_visible") and len(self.trace_visible) == len(self.series):
-                visible_ts_indices = [i for i, v in enumerate(self.trace_visible) if v]
-            else:
-                visible_ts_indices = list(range(len(self.series)))
-
             layout = self.plot_area.ci.layout
 
-            # Base height for calculations
+            # Base height for calculations - allow very small heights
             BASE_HEIGHT = 100
-            MIN_HEIGHT = 30
+            MIN_HEIGHT = 1  # Very small minimum to allow extreme shrinking
 
-            # Apply to visible time series plots
+            # Get the ordered list of visible plots
+            visible_plots = self._get_visible_subplot_order()
+
             row = 0
-            for ts_idx in visible_ts_indices:
-                factor = self.plot_height_factors[ts_idx] if ts_idx < len(self.plot_height_factors) else 1.0
-                preferred = max(MIN_HEIGHT, int(BASE_HEIGHT * factor))
-                layout.setRowPreferredHeight(row, preferred)
-                layout.setRowMinimumHeight(row, MIN_HEIGHT)
-                layout.setRowStretchFactor(row, max(1, int(factor * 10)))
-                row += 1
+            for plot_type, idx in visible_plots:
+                if plot_type == "ts":
+                    factor = (
+                        self.plot_height_factors[idx]
+                        if idx < len(self.plot_height_factors)
+                        else 1.0
+                    )
+                    plt = self.plots[idx] if idx < len(self.plots) else None
 
-            # Apply to matrix plots
-            # If proportional scaling is on and custom factors are all 1.0, use proportional logic
-            # Otherwise, use custom factors
-            for m_idx, ms in enumerate(self.matrix_series):
-                factor = self.matrix_height_factors[m_idx] if m_idx < len(self.matrix_height_factors) else 1.0
-                
-                if self.scale_matrix_proportionally:
-                    # Combine proportional scaling with custom factor
-                    boost_factor = 1.0 + (self.matrix_share_boost * 0.05)
-                    BASE_HEIGHT_PER_ROW = 12 * boost_factor
-                    preferred = max(MIN_HEIGHT, int(ms.n_rows * BASE_HEIGHT_PER_ROW * factor))
-                    stretch = int(max(1, ms.n_rows * boost_factor * factor))
-                else:
-                    # Just use custom factor
                     preferred = max(MIN_HEIGHT, int(BASE_HEIGHT * factor))
-                    stretch = max(1, int(factor * 10))
-                
+                    stretch = max(
+                        1, int(factor * 100)
+                    )  # Scale stretch more aggressively
+
+                    # Hide axis labels for very small plots (below 0.2x)
+                    if plt:
+                        self._configure_plot_for_height(plt, factor, is_matrix=False)
+
+                else:  # matrix
+                    factor = (
+                        self.matrix_height_factors[idx]
+                        if idx < len(self.matrix_height_factors)
+                        else 1.0
+                    )
+                    plt = (
+                        self.matrix_plots[idx] if idx < len(self.matrix_plots) else None
+                    )
+                    ms = (
+                        self.matrix_series[idx]
+                        if idx < len(self.matrix_series)
+                        else None
+                    )
+
+                    if self.scale_matrix_proportionally and ms:
+                        # Combine proportional scaling with custom factor
+                        boost_factor = 1.0 + (self.matrix_share_boost * 0.05)
+                        BASE_HEIGHT_PER_ROW = 12 * boost_factor
+                        preferred = max(
+                            MIN_HEIGHT, int(ms.n_rows * BASE_HEIGHT_PER_ROW * factor)
+                        )
+                        stretch = max(1, int(ms.n_rows * boost_factor * factor * 10))
+                    else:
+                        preferred = max(MIN_HEIGHT, int(BASE_HEIGHT * factor))
+                        stretch = max(1, int(factor * 100))
+
+                    # Hide axis labels for very small plots
+                    if plt:
+                        self._configure_plot_for_height(plt, factor, is_matrix=True)
+
                 layout.setRowPreferredHeight(row, preferred)
                 layout.setRowMinimumHeight(row, MIN_HEIGHT)
                 layout.setRowStretchFactor(row, stretch)
@@ -1201,7 +1325,51 @@ class SleepScorerApp(QtWidgets.QMainWindow):
 
         except Exception as e:
             import traceback
+
             traceback.print_exc()
+
+    def _configure_plot_for_height(self, plt, factor, is_matrix=False):
+        """Configure plot axis visibility based on height factor."""
+        try:
+            # For very small plots (below 0.2x), hide axis labels to save space
+            if factor < 0.2:
+                plt.getAxis("left").setStyle(showValues=False)
+                plt.getAxis("left").setWidth(15)
+                plt.setLabel("left", "")
+            else:
+                plt.getAxis("left").setStyle(showValues=True)
+                plt.getAxis("left").setWidth(None)  # Auto width
+                # Restore label if needed (we don't store original, so this is best effort)
+        except Exception:
+            pass
+
+    def _get_visible_subplot_order(self):
+        """Get the list of visible subplots in their current order."""
+        # Ensure visibility lists are properly sized
+        if not hasattr(self, "trace_visible") or len(self.trace_visible) != len(
+            self.series
+        ):
+            self.trace_visible = [True] * len(self.series)
+        while len(self.matrix_visible) < len(self.matrix_series):
+            self.matrix_visible.append(True)
+
+        # Use subplot_order if set, otherwise default order
+        if self.subplot_order:
+            order = self.subplot_order
+        else:
+            order = [("ts", i) for i in range(len(self.series))]
+            order += [("matrix", i) for i in range(len(self.matrix_series))]
+
+        # Filter to only visible plots
+        visible = []
+        for plot_type, idx in order:
+            if plot_type == "ts":
+                if idx < len(self.trace_visible) and self.trace_visible[idx]:
+                    visible.append((plot_type, idx))
+            else:  # matrix
+                if idx < len(self.matrix_visible) and self.matrix_visible[idx]:
+                    visible.append((plot_type, idx))
+        return visible
 
     # ---------- Data ----------
     def _load_series_from_dir(self, folder):
@@ -1384,9 +1552,12 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         self.matrix_sel_regions.clear()
         self.matrix_label_regions.clear()
         self._matrix_line_items.clear()
-        
-        # Initialize height factors for time series plots
+
+        # Initialize height factors and visibility for time series plots
         self.plot_height_factors = [1.0] * len(series_list)
+        self.trace_visible = [True] * len(series_list)
+        # Reset subplot order when loading new data
+        self.subplot_order = None
 
         # Calculate time range from both time series and matrix data
         t_arrays = [s.t for s in self.series]
@@ -1544,8 +1715,11 @@ class SleepScorerApp(QtWidgets.QMainWindow):
 
         if matrix_series:
             self.matrix_series = matrix_series
-            # Initialize height factors for matrix plots
+            # Initialize height factors and visibility for matrix plots
             self.matrix_height_factors = [1.0] * len(matrix_series)
+            self.matrix_visible = [True] * len(matrix_series)
+            # Reset subplot order to include new matrix plots
+            self.subplot_order = None
             self._update_status(f"Loaded {len(matrix_series)} matrix series.")
             # Rebuild plots to include matrix series
             if self.series:
@@ -1885,58 +2059,6 @@ class SleepScorerApp(QtWidgets.QMainWindow):
 
         # Apply custom plot heights (includes matrix row heights logic)
         self._apply_custom_plot_heights()
-
-    def _apply_matrix_row_heights(self):
-        """Apply proportional row heights to matrix plots if enabled.
-
-        When scale_matrix_proportionally is True, matrix plots scale based on
-        their number of rows (e.g., a plot with 20 rows is twice as tall as
-        one with 10 rows).
-
-        The matrix_share_boost adjusts the relative size of matrix vs time series
-        plots: each unit represents ~5% more/less space for matrix plots.
-        """
-        if not self.matrix_series or not self.scale_matrix_proportionally:
-            return
-
-        try:
-            # Count visible time series to determine where matrix plots start
-            if hasattr(self, "trace_visible") and len(self.trace_visible) == len(
-                self.series
-            ):
-                visible_series_count = sum(1 for v in self.trace_visible if v)
-            else:
-                visible_series_count = len(self.series)
-
-            layout = self.plot_area.ci.layout
-
-            # Calculate total rows across all matrix plots for proportional sizing
-            total_matrix_rows = sum(ms.n_rows for ms in self.matrix_series)
-            if total_matrix_rows <= 0:
-                return
-
-            # Base height per row (pixels) - adjusted by matrix_share_boost
-            # Each boost unit adds/removes 5% to the base height (no bounds)
-            # boost=0 -> factor=1.0, boost=+10 -> factor=1.5, boost=-10 -> factor=0.5
-            boost_factor = 1.0 + (self.matrix_share_boost * 0.05)
-            BASE_HEIGHT_PER_ROW = 12 * boost_factor
-            MIN_HEIGHT = 30  # Minimum height to ensure small matrices are still visible
-
-            # Set preferred heights for matrix plots proportional to n_rows
-            # This is the key: setRowPreferredHeight actually affects sizing,
-            # while setRowStretchFactor alone does not work well with pyqtgraph
-            for idx, (plt, ms) in enumerate(zip(self.matrix_plots, self.matrix_series)):
-                row = visible_series_count + idx
-                preferred_height = max(MIN_HEIGHT, ms.n_rows * BASE_HEIGHT_PER_ROW)
-                layout.setRowPreferredHeight(row, preferred_height)
-                layout.setRowMinimumHeight(row, MIN_HEIGHT)
-                # Also set stretch factor (helps with extra space distribution)
-                stretch = int(max(1, ms.n_rows * boost_factor))
-                layout.setRowStretchFactor(row, stretch)
-        except Exception as e:
-            import traceback
-
-            traceback.print_exc()
 
     def _matrix_segment_for_window(
         self, ms: MatrixSeries, t0: float, t1: float, max_events: int = 10000
@@ -3156,77 +3278,111 @@ class SleepScorerApp(QtWidgets.QMainWindow):
 
     # ---------- Trace visibility ----------
     def _apply_trace_visibility(self):
-        # Rebuild the graphics layout to include only visible traces in rows
+        # Rebuild the graphics layout based on visibility and subplot order
         try:
             # Remove all plots from layout first
             self.plot_area.clear()
             master_plot = None
             row = 0
-            # Add visible time series plots
+
+            # Get visible plots in order
+            visible_plots = self._get_visible_subplot_order()
+
+            # Determine which is the last visible plot for axis labeling
+            last_idx = len(visible_plots) - 1
+
+            for i, (plot_type, idx) in enumerate(visible_plots):
+                is_last = i == last_idx
+
+                if plot_type == "ts":
+                    if idx >= len(self.plots):
+                        continue
+                    plt = self.plots[idx]
+                    plt.setVisible(True)
+                    self.plot_area.addItem(plt, row=row, col=0)
+
+                    # Update bottom axis visibility
+                    if self.low_profile_x and not is_last:
+                        try:
+                            plt.setLabel("bottom", "")
+                            bax = plt.getAxis("bottom")
+                            bax.setStyle(showValues=True, tickLength=0)
+                            bax.setTextPen(pg.mkPen(0, 0, 0, 0))
+                            bax.setHeight(12)
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            plt.setLabel(
+                                "bottom", "Time", units="s" if is_last else None
+                            )
+                            bax = plt.getAxis("bottom")
+                            bax.setStyle(showValues=True, tickLength=-5)
+                            bax.setTextPen(pg.mkPen("w"))
+                            bax.setHeight(None)
+                        except Exception:
+                            pass
+
+                else:  # matrix
+                    if idx >= len(self.matrix_plots):
+                        continue
+                    plt = self.matrix_plots[idx]
+                    plt.setVisible(True)
+                    self.plot_area.addItem(plt, row=row, col=0)
+
+                    # Update bottom axis visibility
+                    if self.low_profile_x and not is_last:
+                        try:
+                            plt.setLabel("bottom", "")
+                            bax = plt.getAxis("bottom")
+                            bax.setStyle(showValues=True, tickLength=0)
+                            bax.setTextPen(pg.mkPen(0, 0, 0, 0))
+                            bax.setHeight(12)
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            plt.setLabel(
+                                "bottom", "Time", units="s" if is_last else None
+                            )
+                            bax = plt.getAxis("bottom")
+                            bax.setStyle(showValues=True, tickLength=-5)
+                            bax.setTextPen(pg.mkPen("w"))
+                            bax.setHeight(None)
+                        except Exception:
+                            pass
+
+                if master_plot is None:
+                    master_plot = plt
+                else:
+                    plt.setXLink(master_plot)
+                row += 1
+
+            # Hide plots that are not visible
             for idx, plt in enumerate(self.plots):
-                vis = (
-                    True if idx >= len(self.trace_visible) else self.trace_visible[idx]
-                )
-                plt.setVisible(bool(vis))
-                if not vis:
-                    continue
-                self.plot_area.addItem(plt, row=row, col=0)
-                if master_plot is None:
-                    master_plot = plt
-                else:
-                    plt.setXLink(master_plot)
-                row += 1
-            # Add matrix plots (always visible for now)
-            for plt in self.matrix_plots:
-                self.plot_area.addItem(plt, row=row, col=0)
-                if master_plot is None:
-                    master_plot = plt
-                else:
-                    plt.setXLink(master_plot)
-                row += 1
-            # Apply custom plot heights (includes matrix row heights logic)
+                if (
+                    not self.trace_visible[idx]
+                    if idx < len(self.trace_visible)
+                    else False
+                ):
+                    plt.setVisible(False)
+            for idx, plt in enumerate(self.matrix_plots):
+                if (
+                    not self.matrix_visible[idx]
+                    if idx < len(self.matrix_visible)
+                    else False
+                ):
+                    plt.setVisible(False)
+
+            # Apply custom plot heights
             self._apply_custom_plot_heights()
             # Re-apply x-range to keep all linked
             self._apply_x_range()
             QtCore.QTimer.singleShot(0, self._align_left_axes)
         except Exception:
-            pass
+            import traceback
 
-    def _show_trace_visibility_dialog(self):
-        if not self.series:
-            QtWidgets.QMessageBox.information(self, "Traces", "No traces loaded.")
-            return
-        if not hasattr(self, "trace_visible") or len(self.trace_visible) != len(
-            self.series
-        ):
-            self.trace_visible = [True] * len(self.series)
-
-        dlg = QtWidgets.QDialog(self)
-        dlg.setWindowTitle("Show / Hide Traces")
-        lay = QtWidgets.QVBoxLayout(dlg)
-        scroll = QtWidgets.QScrollArea()
-        scroll.setWidgetResizable(True)
-        cont = QtWidgets.QWidget()
-        form = QtWidgets.QFormLayout(cont)
-        checks = []
-        for i, s in enumerate(self.series):
-            cb = QtWidgets.QCheckBox()
-            cb.setChecked(
-                True if i >= len(self.trace_visible) else bool(self.trace_visible[i])
-            )
-            checks.append(cb)
-            form.addRow(str(s.name), cb)
-        scroll.setWidget(cont)
-        lay.addWidget(scroll)
-        btns = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
-        )
-        lay.addWidget(btns)
-        btns.accepted.connect(dlg.accept)
-        btns.rejected.connect(dlg.reject)
-        if dlg.exec() == QtWidgets.QDialog.Accepted:
-            self.trace_visible = [bool(cb.isChecked()) for cb in checks]
-            self._apply_trace_visibility()
+            traceback.print_exc()
 
     def _set_video_visible(self, which: int, visible: bool):
         lbl = None

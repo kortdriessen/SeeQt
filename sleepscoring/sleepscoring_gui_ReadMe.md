@@ -158,15 +158,14 @@ Zoom & axes
 - `z`: toggle hypnogram zoom (zoom to window ± padding vs. full extent).
 - `h`: toggle hypnogram visibility (frees vertical space for videos).
 
+Subplot management
+- Ctrl+H: open Subplot Control Board (height, visibility, order for all subplots).
+
 Video controls
 - View → Adjust Secondary Videos Size…: slider to reduce/enlarge Video 1’s share so Video 2/3 gain space (live preview).
 - View → Show Video 1/2/3 (checkable) or:
   - Ctrl+Shift+1 / Ctrl+Shift+2 / Ctrl+Shift+3 to toggle each video.
 - Videos auto‑scale to their label sizes; resizing the splitter re‑scales the frames.
-
-Trace visibility
-- View → Show/Hide Traces…: toggle visibility of any trace.
-- Hidden traces disappear completely and the remaining traces expand to occupy the space. X‑linking remains intact.
 
 Matrix viewer controls
 - View → Proportional Matrix Plots (Ctrl+Shift+M): toggle proportional sizing of matrix plots based on their row count. When enabled, a plot with 20 rows will be twice as tall as one with 10 rows.
@@ -177,8 +176,14 @@ Matrix viewer controls
 - View → Matrix Event Thickness…: adjust the pen width of event lines in pixels (1–10). Default is 2.
 - Matrix plots show only min/max Y tick labels and have no horizontal grid lines for a clean raster appearance.
 
-Plot height customization
-- View → Plot Heights Control Board… (Ctrl+H): opens a dialog with sliders for every visible subplot (time series and matrix). Adjust individual plot heights from 0.1× to 5.0× the default. When one plot is made taller, the others proportionally shrink. Use "Reset All to Default" to restore all heights to 1.0×.
+Subplot Control Board
+- View → Subplot Control Board… (Ctrl+H): opens a comprehensive dialog to control all subplots (time series and matrix).
+  - **Height sliders**: Adjust individual plot heights from 0.01× to 20.0× the default. When one plot is made taller, the others proportionally shrink. For very small plots (below 0.2×), axis labels are automatically hidden to save space.
+  - **Hide checkbox**: Check "Hide" to hide a subplot entirely from the view. Hidden subplots disappear completely and remaining plots expand to fill the space.
+  - **Drag to reorder**: Drag subplot rows up/down to change their display order. Matrix plots can be moved above time series plots, and vice versa.
+  - **Reset Heights**: Restore all height factors to 1.0×.
+  - **Show All**: Unhide all subplots.
+  - **Reset Order**: Restore the default order (all time series first, then all matrix plots).
 
 Import/Export labels
 - File → Load Labels… reads CSV with header `start_s,end_s,label`.
@@ -229,8 +234,9 @@ Layout and sizing
 - Left plot spines (Y axes) are aligned by measuring axis widths and applying the maximum using `setWidth()`.
 - `--low_profile_x` keeps vertical grid lines for upper plots while hiding axis labels/ticks so only the bottom plot shows time tick labels.
 - The videos are grouped in a dedicated right‑panel container with its own vertical layout. Stretches are applied only to video rows so you can reallocate space between Video 1 vs Videos 2/3 without fighting other controls.
-- Traces are placed in a `GraphicsLayoutWidget`; when you hide a trace, the layout is rebuilt only with visible plots and X‑linking is re‑established.
-- Individual plot heights can be customized via the Plot Heights Control Board (Ctrl+H). Each plot has a height factor (default 1.0×) that scales from 0.1× to 5.0×. Heights are applied using `setRowPreferredHeight` and `setRowStretchFactor` to achieve proportional sizing.
+- Traces are placed in a `GraphicsLayoutWidget`; when you hide a subplot, the layout is rebuilt only with visible plots and X‑linking is re‑established.
+- Individual subplot heights, visibility, and order are controlled via the Subplot Control Board (Ctrl+H). Each plot has a height factor (default 1.0×) that scales from 0.01× to 20.0×. For very small plots (below 0.2×), axis labels are hidden automatically. Heights are applied using `setRowPreferredHeight` and `setRowStretchFactor` with very low minimum constraints to allow extreme shrinking.
+- Subplot order can be customized by dragging rows in the Subplot Control Board. This allows placing matrix plots above time series plots or interleaving them.
 
 Matrix viewer rendering
 - Matrix/raster plots display discrete events as vertical line segments.
