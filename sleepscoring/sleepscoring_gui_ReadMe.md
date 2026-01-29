@@ -67,7 +67,15 @@ Videos:
 - A static image (`--image`) can be shown when only one video is present or for custom use.
 
 Labels:
-- CSV import/export uses the header `start_s,end_s,label` with rows specifying half‑open intervals `[start_s, end_s)`.
+- CSV import/export uses the header `start_s,end_s,label,note` with rows specifying half‑open intervals `[start_s, end_s)`.
+- The `note` column is optional; old CSV files without notes are still supported.
+- Notes can be added to any scored epoch via Ctrl+Shift+N.
+
+State definitions:
+- State hotkeys and label colors are loaded from `state_definitions.json` in the same directory as the main script.
+- The file contains a `keymap` object (key → state name) and a `label_colors` object (state name → [R, G, B, A]).
+- If the file is missing or invalid, built-in defaults are used.
+- To customize states, edit `state_definitions.json` and restart the app.
 
 Matrix/Raster data:
 - Matrix plots display discrete events as vertical lines in a raster format (e.g., neural spike rasters).
@@ -152,6 +160,12 @@ Selection & labeling
 - Backspace (Edit → Delete last label): removes the most recently ending label.
 - Labels that overlap or are directly adjacent and have the same state are merged automatically into a single epoch.
 
+Epoch notes & navigation
+- Ctrl+Shift+N: Add or edit a note for the epoch at cursor (or most recently scored epoch if cursor is unlabeled).
+- Ctrl+J: Open "Jump to Epochs" dialog to view all epochs in a table. Double-click to navigate.
+  - Filter by state (dropdown) or by text in notes (search box).
+  - Double-clicking an epoch centers the window on that epoch.
+
 Zoom & axes
 - Ctrl + 1 / Ctrl + 2: zoom Y‑axis in/out on the hovered plot.
 - View → Y‑Axis Controls… (Ctrl+D): per‑trace autorange toggle and min/max input.
@@ -199,6 +213,9 @@ Import/Export labels
 5. Use the hypnogram to verify global dynamics; toggle `z` to zoom the overview.
 6. Adjust Y scales per trace via Ctrl+D (or use `--fixed_scale` at launch).
 7. If reviewing behavior videos, step the selected video frame‑by‑frame with Left/Right. Use the frame step target menu to choose which video to step.
+8. Add notes to epochs (Ctrl+Shift+N) to flag unclear or interesting cases for later review.
+9. Use Jump to Epochs (Ctrl+J) to quickly navigate to epochs with specific states or notes.
+10. Customize state hotkeys and colors by editing `state_definitions.json` in the sleepscoring folder.
 
 ---
 
@@ -223,7 +240,9 @@ Labeling model
   - After insertion, adjacent/overlapping intervals with the same label are merged.
 - Clearing (`0`) removes any overlapping parts by splitting and discarding overlaps.
 - All label regions are drawn across every trace as translucent `LinearRegionItem`s.
-- The hypnogram overview shows the same label spans collapsed to a single row with a translucent “current window” region.
+- The hypnogram overview shows the same label spans collapsed to a single row with a translucent "current window" region.
+- Notes are stored in a separate dict keyed by (start, end) tuple and exported/imported with labels.
+- State definitions (hotkeys and colors) are loaded from `state_definitions.json` at startup.
 
 Videos and threading
 - Each video is handled by a `VideoWorker` in its own `QThread`, with a small LRU frame cache. Frames are requested by nearest frame index to the current cursor time.

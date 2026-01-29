@@ -7,7 +7,7 @@ page hotkeys, and cross-page draggable labeling.
 pip install PySide6 pyqtgraph opencv-python numpy
 """
 
-import os, sys, glob, csv, math, argparse
+import os, sys, glob, csv, math, argparse, json
 from collections import OrderedDict
 from dataclasses import dataclass
 
@@ -19,6 +19,86 @@ try:
     import cv2
 except Exception:
     cv2 = None
+
+
+# ---------------- State Definitions Loader ----------------
+
+
+def load_state_definitions():
+    """Load keymap and label_colors from state_definitions.json.
+
+    Looks for the file in the same directory as this script.
+    Falls back to defaults if file not found or invalid.
+    """
+    # Default definitions (fallback)
+    default_keymap = {
+        "w": "Wake",
+        "q": "Quiet-Wake",
+        "b": "Brief-Arousal",
+        "2": "NREM-light",
+        "1": "NREM",
+        "r": "REM",
+        "a": "Artifact",
+        "t": "Transition-to-REM",
+        "u": "unclear",
+        "o": "ON",
+        "f": "OFF",
+        "s": "spindle",
+    }
+    default_label_colors = {
+        "Wake": (0, 209, 40, 60),
+        "Quiet-Wake": (79, 255, 168, 60),
+        "Brief-Arousal": (188, 255, 45, 60),
+        "NREM-light": (79, 247, 255, 60),
+        "NREM": (41, 30, 255, 60),
+        "Transition-to-REM": (255, 101, 224, 60),
+        "REM": (255, 30, 145, 60),
+        "Artifact": (255, 0, 0, 80),
+        "unclear": (242, 255, 41, 50),
+        "ITI": (79, 247, 255, 60),
+        "Go": (0, 209, 40, 60),
+        "NoGo": (255, 0, 0, 80),
+        "Timeout": (255, 30, 145, 60),
+        "ON": (0, 209, 40, 60),
+        "OFF": (255, 0, 0, 80),
+        "spindle": (79, 247, 255, 60),
+    }
+
+    # Try to load from JSON file
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    config_path = os.path.join(script_dir, "state_definitions.json")
+
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            keymap = data.get("keymap", default_keymap)
+            label_colors_raw = data.get("label_colors", {})
+
+            # Convert JSON arrays to tuples for colors
+            label_colors = {}
+            for name, color in label_colors_raw.items():
+                if isinstance(color, list) and len(color) >= 3:
+                    label_colors[name] = tuple(
+                        color[:4] if len(color) >= 4 else color + [255]
+                    )
+                else:
+                    label_colors[name] = default_label_colors.get(
+                        name, (150, 150, 150, 80)
+                    )
+
+            # Merge with defaults to ensure all keys exist
+            for k, v in default_label_colors.items():
+                if k not in label_colors:
+                    label_colors[k] = v
+
+            return keymap, label_colors
+        except Exception as e:
+            print(f"Warning: Could not load state_definitions.json: {e}")
+            print("Using default state definitions.")
+
+    return default_keymap, default_label_colors
 
 
 # ---------------- Data containers ----------------
@@ -419,9 +499,9 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         self._matrix_line_items: list[list] = []  # line items for each matrix plot
         # Matrix rendering settings
         self.matrix_event_height = (
-            0.4  # distance from center in each direction (0.1-0.5)
+            0.1  # distance from center in each direction (0.1-0.5)
         )
-        self.matrix_event_thickness = 2  # pen width in pixels
+        self.matrix_event_thickness = 1  # pen width in pixels
         self.scale_matrix_proportionally = False  # toggled via View menu
         self.matrix_share_boost = (
             0  # adjustment to matrix share (each unit = 5%, no bounds)
@@ -446,39 +526,13 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         self.window_start = 0.0
         self.cursor_time = 0.0
 
-        self.keymap = {
-            "w": "Wake",
-            "q": "Quiet-Wake",
-            "b": "Brief-Arousal",
-            "2": "NREM-light",
-            "1": "NREM",
-            "r": "REM",
-            "a": "Artifact",
-            "t": "Transition-to-REM",
-            "u": "unclear",
-            "o": "ON",
-            "f": "OFF",
-            "s": "spindle",
-        }
-        self.label_colors = {
-            "Wake": (0, 209, 40, 60),
-            "Quiet-Wake": (79, 255, 168, 60),
-            "Brief-Arousal": (188, 255, 45, 60),
-            "NREM-light": (79, 247, 255, 60),
-            "NREM": (41, 30, 255, 60),
-            "Transition-to-REM": (255, 101, 224, 60),
-            "REM": (255, 30, 145, 60),
-            "Artifact": (255, 0, 0, 80),
-            "unclear": (242, 255, 41, 50),
-            "ITI": (79, 247, 255, 60),
-            "Go": (0, 209, 40, 60),
-            "NoGo": (255, 0, 0, 80),
-            "Timeout": (255, 30, 145, 60),
-            "ON": (0, 209, 40, 60),
-            "OFF": (255, 0, 0, 80),
-            "spindle": (79, 247, 255, 60),
-        }
+        # Load state definitions from external config file
+        self.keymap, self.label_colors = load_state_definitions()
+
+        # Labels and notes
         self.labels = []
+        self.label_notes = {}  # Maps (start, end) tuple to note string
+        self.label_history = []  # Track order of epoch creation for "most recent"
         self._select_start = None
         self._select_end = None
         self._is_zoom_drag = False
@@ -787,6 +841,11 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         dl.setShortcut(QtGui.QKeySequence(QtCore.Qt.Key.Key_Backspace))
         dl.triggered.connect(self._delete_last_label)
         medit.addAction(dl)
+        medit.addSeparator()
+        note_action = QtGui.QAction("Add/Edit Epoch Note...", self)
+        note_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+N"))
+        note_action.triggered.connect(self._edit_epoch_note)
+        medit.addAction(note_action)
 
         mview = self.menuBar().addMenu("&View")
         y_axis_action = QtGui.QAction("Y-Axis Controls...", self)
@@ -890,6 +949,12 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         subplot_control_action.setShortcut(QtGui.QKeySequence("Ctrl+H"))
         subplot_control_action.triggered.connect(self._show_subplot_control_dialog)
         mview.addAction(subplot_control_action)
+
+        mview.addSeparator()
+        jump_epochs_action = QtGui.QAction("Jump to Epochs...", self)
+        jump_epochs_action.setShortcut(QtGui.QKeySequence("Ctrl+J"))
+        jump_epochs_action.triggered.connect(self._show_jump_to_epochs_dialog)
+        mview.addAction(jump_epochs_action)
 
         mhelp = self.menuBar().addMenu("&Help")
         hh = QtGui.QAction("Shortcuts / Help", self)
@@ -1024,6 +1089,192 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok)
         btns.accepted.connect(dlg.accept)
         lay.addWidget(btns)
+
+        dlg.exec()
+
+    def _edit_epoch_note(self):
+        """Add or edit a note for the current or most recently scored epoch."""
+        if not self.labels:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "No Epochs",
+                "No scored epochs exist. Please score an epoch first.",
+            )
+            return
+
+        # Find the epoch at cursor position
+        target_epoch = None
+        for lab in self.labels:
+            if lab["start"] <= self.cursor_time < lab["end"]:
+                target_epoch = lab
+                break
+
+        # If cursor is not in an epoch, use most recently scored epoch
+        if target_epoch is None:
+            if self.label_history:
+                # Find the most recent epoch that still exists
+                for start, end in reversed(self.label_history):
+                    for lab in self.labels:
+                        if (
+                            abs(lab["start"] - start) < 1e-6
+                            and abs(lab["end"] - end) < 1e-6
+                        ):
+                            target_epoch = lab
+                            break
+                    if target_epoch:
+                        break
+
+        if target_epoch is None:
+            # Just use the last label in the list as fallback
+            target_epoch = self.labels[-1]
+
+        # Get existing note if any
+        key = (float(target_epoch["start"]), float(target_epoch["end"]))
+        existing_note = self.label_notes.get(key, "")
+
+        # Show dialog to edit note
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Epoch Note")
+        dlg.setMinimumWidth(400)
+        layout = QtWidgets.QVBoxLayout(dlg)
+
+        info_label = QtWidgets.QLabel(
+            f"Epoch: {target_epoch['label']}\n"
+            f"Time: {target_epoch['start']:.3f}s - {target_epoch['end']:.3f}s"
+        )
+        layout.addWidget(info_label)
+
+        text_edit = QtWidgets.QTextEdit()
+        text_edit.setPlainText(existing_note)
+        text_edit.setMinimumHeight(100)
+        layout.addWidget(text_edit)
+
+        btns = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        layout.addWidget(btns)
+
+        if dlg.exec() == QtWidgets.QDialog.Accepted:
+            new_note = text_edit.toPlainText().strip()
+            if new_note:
+                self.label_notes[key] = new_note
+            elif key in self.label_notes:
+                del self.label_notes[key]
+            self._update_status()
+
+    def _show_jump_to_epochs_dialog(self):
+        """Show a table of all epochs for navigation and filtering."""
+        if not self.labels:
+            QtWidgets.QMessageBox.information(
+                self, "Jump to Epochs", "No scored epochs to display."
+            )
+            return
+
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Jump to Epochs")
+        dlg.setMinimumWidth(700)
+        dlg.setMinimumHeight(500)
+        layout = QtWidgets.QVBoxLayout(dlg)
+
+        # Filter controls
+        filter_layout = QtWidgets.QHBoxLayout()
+        filter_layout.addWidget(QtWidgets.QLabel("Filter by State:"))
+        state_filter = QtWidgets.QComboBox()
+        state_filter.addItem("(All)")
+        # Add unique states from labels
+        unique_states = sorted(set(lab["label"] for lab in self.labels))
+        for state in unique_states:
+            state_filter.addItem(state)
+        filter_layout.addWidget(state_filter)
+
+        filter_layout.addWidget(QtWidgets.QLabel("Filter Notes:"))
+        notes_filter = QtWidgets.QLineEdit()
+        notes_filter.setPlaceholderText("Enter text to search in notes...")
+        filter_layout.addWidget(notes_filter, 1)
+
+        layout.addLayout(filter_layout)
+
+        # Table widget
+        table = QtWidgets.QTableWidget()
+        table.setColumnCount(4)
+        table.setHorizontalHeaderLabels(["Start (s)", "End (s)", "State", "Notes"])
+        table.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        table.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
+        )
+        table.horizontalHeader().setStretchLastSection(True)
+        table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        layout.addWidget(table, 1)
+
+        def populate_table():
+            """Populate or filter the table based on current filters."""
+            state_val = state_filter.currentText()
+            notes_val = notes_filter.text().strip().lower()
+
+            table.setRowCount(0)
+            row = 0
+            for lab in self.labels:
+                # State filter
+                if state_val != "(All)" and lab["label"] != state_val:
+                    continue
+
+                # Get note for this epoch
+                key = (float(lab["start"]), float(lab["end"]))
+                note = self.label_notes.get(key, "")
+
+                # Notes filter
+                if notes_val and notes_val not in note.lower():
+                    continue
+
+                table.insertRow(row)
+                table.setItem(row, 0, QtWidgets.QTableWidgetItem(f"{lab['start']:.3f}"))
+                table.setItem(row, 1, QtWidgets.QTableWidgetItem(f"{lab['end']:.3f}"))
+                table.setItem(row, 2, QtWidgets.QTableWidgetItem(lab["label"]))
+                table.setItem(row, 3, QtWidgets.QTableWidgetItem(note))
+
+                # Store epoch data in the first cell for later retrieval
+                table.item(row, 0).setData(QtCore.Qt.ItemDataRole.UserRole, lab)
+                row += 1
+
+            table.resizeColumnsToContents()
+
+        populate_table()
+
+        # Connect filters to update table
+        state_filter.currentTextChanged.connect(lambda: populate_table())
+        notes_filter.textChanged.connect(lambda: populate_table())
+
+        def on_double_click(row, col):
+            """Jump to the selected epoch (keeps dialog open)."""
+            item = table.item(row, 0)
+            if item:
+                lab = item.data(QtCore.Qt.ItemDataRole.UserRole)
+                if lab:
+                    # Calculate center of epoch
+                    center = (lab["start"] + lab["end"]) / 2.0
+                    # Position window so center is in the middle
+                    new_start = center - self.window_len / 2.0
+                    new_start = clamp(
+                        new_start,
+                        self.t_global_min,
+                        max(self.t_global_min, self.t_global_max - self.window_len),
+                    )
+                    self.window_start = new_start
+                    self.cursor_time = center
+                    self._apply_x_range()
+                    self._update_nav_slider_from_window()
+                    # Dialog stays open so user can continue navigating
+
+        table.cellDoubleClicked.connect(on_double_click)
+
+        # Close button
+        close_btn = QtWidgets.QPushButton("Close")
+        close_btn.clicked.connect(dlg.reject)
+        layout.addWidget(close_btn)
 
         dlg.exec()
 
@@ -2524,6 +2775,9 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         self._merge_adjacent_same_labels()
         self._redraw_all_labels()
 
+        # Track this label as most recently created (for note assignment)
+        self.label_history.append((float(start), float(end)))
+
     def _clear_labels_in_range(self, start: float, end: float):
         """Remove any labels overlapping [start, end). Preserve non-overlapping parts.
 
@@ -2857,25 +3111,32 @@ class SleepScorerApp(QtWidgets.QMainWindow):
             return
 
         loaded_labels = []
+        loaded_notes = {}
         try:
-            with open(path, "r", newline="") as f:
+            with open(path, "r", newline="", encoding="utf-8") as f:
                 reader = csv.reader(f)
                 header = next(reader)
-                if header != ["start_s", "end_s", "label"]:
+
+                # Support both old format (no notes) and new format (with notes)
+                has_notes = len(header) >= 4 and header[3] == "note"
+                if header[:3] != ["start_s", "end_s", "label"]:
                     raise ValueError("CSV header does not match expected format.")
 
                 for row in reader:
                     if not row:
                         continue
-                    loaded_labels.append(
-                        {
-                            "start": float(row[0]),
-                            "end": float(row[1]),
-                            "label": str(row[2]),
-                        }
-                    )
+                    start = float(row[0])
+                    end = float(row[1])
+                    label = str(row[2])
+                    loaded_labels.append({"start": start, "end": end, "label": label})
+
+                    # Load note if present
+                    if has_notes and len(row) >= 4 and row[3].strip():
+                        loaded_notes[(start, end)] = row[3]
 
             self.labels = sorted(loaded_labels, key=lambda x: x["start"])
+            self.label_notes = loaded_notes
+            self.label_history = [(lab["start"], lab["end"]) for lab in self.labels]
             self._merge_adjacent_same_labels()
             self._redraw_all_labels()
             self._update_status(
@@ -2898,12 +3159,14 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         if not path:
             return
         try:
-            with open(path, "w", newline="") as f:
+            with open(path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
-                writer.writerow(["start_s", "end_s", "label"])
+                writer.writerow(["start_s", "end_s", "label", "note"])
                 for lab in self.labels:
+                    key = (float(lab["start"]), float(lab["end"]))
+                    note = self.label_notes.get(key, "")
                     writer.writerow(
-                        [f"{lab['start']:.6f}", f"{lab['end']:.6f}", lab["label"]]
+                        [f"{lab['start']:.6f}", f"{lab['end']:.6f}", lab["label"], note]
                     )
             self._update_status(f"Exported labels to {path}")
         except Exception as e:
@@ -3438,20 +3701,36 @@ class SleepScorerApp(QtWidgets.QMainWindow):
         self.status.showMessage("  ".join(info))
 
     def _format_cursor_with_state(self):
-        label = self._get_state_at_time(self.cursor_time)
-        state_txt = label if label is not None else "Unlabeled"
-        return f"cursor={self.cursor_time:.3f}s, state='{state_txt}'"
+        label_info = self._get_state_and_epoch_at_time(self.cursor_time)
+        if label_info is None:
+            return f"cursor={self.cursor_time:.3f}s, state='Unlabeled'"
 
-    def _get_state_at_time(self, t):
+        state_txt = label_info["label"]
+        result = f"cursor={self.cursor_time:.3f}s, state='{state_txt}'"
+
+        # Check for note on this epoch
+        key = (float(label_info["start"]), float(label_info["end"]))
+        note = self.label_notes.get(key, "")
+        if note:
+            # Truncate note for status bar (max 40 chars)
+            if len(note) > 40:
+                note = note[:37] + "..."
+            result += f" | Note: {note}"
+
+        return result
+
+    def _get_state_and_epoch_at_time(self, t):
+        """Get the full label dict at time t, or None if unlabeled."""
         if not self.labels:
             return None
-        # labels are kept sorted by start
         for lab in self.labels:
             if lab["start"] <= t < lab["end"]:
-                return lab["label"]
-            if lab["start"] > t:
-                break
+                return lab
         return None
+
+    def _get_state_at_time(self, t):
+        lab = self._get_state_and_epoch_at_time(t)
+        return lab["label"] if lab else None
 
     def closeEvent(self, ev):
         try:
