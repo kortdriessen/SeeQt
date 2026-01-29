@@ -1,33 +1,60 @@
-from trace_colors import *
+import os
 import subprocess
 import sys
-import os
-import pandas as pd
+
 import numpy as np
+import pandas as pd
 import streamlit as st
+from trace_colors import *
 
 app_path = os.path.join(
-    os.path.dirname(__file__), "..", "..", "sleepscoring", "sleepscore_main.py"
+    os.path.dirname(__file__), "..", "sleepscoring", "sleepscore_main.py"
+)
+
+st.markdown("# Format and View Texture Disrimination Experiment")
+st.markdown(
+    "Data Directorty can be located anywhere and should contain: events.csv, frames.csv, vid.mp4"
 )
 
 
 # DEFINE THESE IF FORMATTING IS NEEDED
-events_name = st.text_input("Events File Name", value="SESSIONx_EVENTS.csv")
-frames_name = st.text_input("Frames File Name", value="SESSIONx_FRAMES.csv")
-video_name = st.text_input("Video File Name", value="SESSIONx.mp4")
+data_dir = st.text_input("Data Directory", value="/data/exp_1")
+
+events_name = st.text_input("Events File Name", value="events.csv")
+frames_name = st.text_input("Frames File Name", value="frames.csv")
+video_name = st.text_input("Video File Name", value="vid.mp4")
+
+time_col_events = st.text_input("Time Column in Events File", value="Pi5_gTime_s")
+time_col_frames = st.text_input("Time Column in Frames File", value="pi5_sync_s")
 
 
 if st.button("Format Data"):
-    ev = pd.read_csv(events_name)
-    ev.rename(columns={"Pico_gTime_s": "time"}, inplace=True)
+    ev = pd.read_csv(os.path.join(data_dir, events_name))
+    ev.rename(columns={time_col_events: "time"}, inplace=True)
     array_start = 0
     array_end = round(ev["time"].values.max())
     fs = 1000
 
     master_times_array = np.arange(array_start, array_end, 1 / fs)
+
+    # First we save the obvious discrete events: licks
     lick_times = ev.loc[ev.Lick_Detected == "Lick"]["time"].values
+    lick_times_y = np.ones_like(lick_times)
+    np.save(os.path.join(data_dir, "lick_events_t.npy"), lick_times)
+    np.save(os.path.join(data_dir, "lick_events_y.npy"), lick_times_y)
+
+    # ... and valve opens/closes
     valve_opens = ev.loc[ev.Valve_timing == "Open"]["time"].values
     valve_closes = ev.loc[ev.Valve_timing == "Close"]["time"].values
+    valve_opens_y = np.ones_like(valve_opens) * 2
+    valve_closes_y = np.ones_like(valve_closes)
+    # (interleave so they are displayed on a single scatter)
+    valve_times_full = np.array(list(zip(valve_opens, valve_closes))).flatten()
+    valve_vals_full = np.array(list(zip(valve_opens_y, valve_closes_y))).flatten()
+    np.save(os.path.join(data_dir, "valve_events_t.npy"), valve_times_full)
+    np.save(os.path.join(data_dir, "valve_events_y.npy"), valve_vals_full)
+
+    # Now we format the motor events into a continuous trace
     motor_indices = ev["Motor_location"].dropna().index.values
     motor_events = ev.iloc[motor_indices]["Motor_location"].values
     motor_event_times = ev.iloc[motor_indices]["time"].values
@@ -68,9 +95,7 @@ if st.button("Format Data"):
             )
         elif name == "presenting":
             motor_values_array[idx0:idx1] = 1.0
-        elif name == "idle":
-            motor_values_array[idx0:idx1] = 0.0
-        # unknown labels are left as-in (zeros)
+        # unknown labels are left as-in (zeros) - i.e. anything that is not forward, backward, presenting
 
     # Format states
     state_indices = ev["State"].dropna().index.values
@@ -88,50 +113,35 @@ if st.button("Format Data"):
             end_s.append(master_times_array[-1])
     states_df = pd.DataFrame({"start_s": start_s, "end_s": end_s, "label": labels})
 
-    # valves and licks
-    open_indices = np.searchsorted(master_times_array, valve_opens)
-    close_indices = np.searchsorted(master_times_array, valve_closes)
-    valve_values = np.zeros_like(master_times_array)
-    for o, c in zip(open_indices, close_indices):
-        valve_values[o:c] = 1.0
-    lick_times
-    lick_ends = lick_times + 0.005
-    lick_values = np.zeros_like(master_times_array)
-    lick_indices = np.searchsorted(master_times_array, lick_times)
-    lick_ends_indices = np.searchsorted(master_times_array, lick_ends)
-    for lick, lick_end in zip(lick_indices, lick_ends_indices):
-        lick_values[lick:lick_end] = 1.0
-
-    # save data to this directory
-    np.save("motor_y.npy", motor_values_array)
-    np.save("valve_y.npy", valve_values)
-    np.save("lick_y.npy", lick_values)
-
-    np.save("motor_t.npy", master_times_array)
-    np.save("valve_t.npy", master_times_array)
-    np.save("lick_t.npy", master_times_array)
-    states_df.to_csv("states.csv", index=False)
-    frames = pd.read_csv(frames_name)
-    frame_times = frames["Pico_gTime_s"].values
-    np.save("frame_times.npy", frame_times)
+    # save to the data directory
+    np.save(os.path.join(data_dir, "motor_y.npy"), motor_values_array)
+    np.save(os.path.join(data_dir, "motor_t.npy"), master_times_array)
+    states_df.to_csv(os.path.join(data_dir, "states.csv"), index=False)
+    frames = pd.read_csv(os.path.join(data_dir, frames_name))
+    frame_times = frames["pi5_sync_s"].values
+    np.save(os.path.join(data_dir, "frame_times.npy"), frame_times)
 
 
 if st.button("Launch GUI using data in current directory"):
     traces = []
     trace_colors = []
-    traces.append("motor_y.npy")
-    traces.append("motor_t.npy")
+    traces.append(os.path.join(data_dir, "motor_y.npy"))
+    traces.append(os.path.join(data_dir, "motor_t.npy"))
     trace_colors.append(glu_green)
-    traces.append("valve_y.npy")
-    traces.append("valve_t.npy")
-    trace_colors.append(load_blue)
-    traces.append("lick_y.npy")
-    traces.append("lick_t.npy")
-    trace_colors.append(whisk_pink)
 
-    video_path = "SESSIONx.mp4"
-    frame_times_path = "frame_times.npy"
+    raster_y = []
+    raster_t = []
+    raster_colors = []
+    raster_y.append(os.path.join(data_dir, "valve_events_y.npy"))
+    raster_t.append(os.path.join(data_dir, "valve_events_t.npy"))
+    raster_colors.append(valve_blue)
 
+    raster_y.append(os.path.join(data_dir, "lick_events_y.npy"))
+    raster_t.append(os.path.join(data_dir, "lick_events_t.npy"))
+    raster_colors.append(lick_pink)
+
+    video_path = os.path.join(data_dir, "vid.mp4")
+    frame_times_path = os.path.join(data_dir, "frame_times.npy")
     cmd = [
         sys.executable,
         app_path,
@@ -141,9 +151,15 @@ if st.button("Launch GUI using data in current directory"):
         video_path,
         "--frame_times",
         frame_times_path,
+        "--matrix_timestamps",
+        *raster_t,
+        "--matrix_yvals",
+        *raster_y,
         "--colors",
         *trace_colors,
+        "--matrix_colors",
+        *raster_colors,
         "--fixed_scale",
         "--low_profile_x",
     ]
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=False)
